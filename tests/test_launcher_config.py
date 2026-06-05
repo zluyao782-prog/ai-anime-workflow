@@ -27,6 +27,8 @@ class LauncherConfigStoreTest(unittest.TestCase):
             self.assertTrue(public["openai_api_key_configured"])
             self.assertEqual(public["openai_image_model"], "gpt-image-2")
             self.assertEqual(public["openai_base_url"], "https://aigate.zhixingjidian.cn")
+            self.assertEqual(public["openai_text_model"], "gpt-4.1-mini")
+            self.assertEqual(public["openai_text_endpoint_mode"], "chat_completions")
 
     def test_defaults_are_returned_when_config_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -37,6 +39,8 @@ class LauncherConfigStoreTest(unittest.TestCase):
             self.assertEqual(public["openai_image_model"], "gpt-image-2")
             self.assertEqual(public["openai_base_url"], "https://aigate.zhixingjidian.cn")
             self.assertEqual(public["ollama_text_model"], "qwen2.5:0.5b")
+            self.assertEqual(public["openai_text_model"], "gpt-4.1-mini")
+            self.assertEqual(public["openai_text_endpoint_mode"], "chat_completions")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ DEFAULT_CONFIG = {
     "openai_api_key": "",
     "openai_base_url": "https://aigate.zhixingjidian.cn",
     "openai_image_model": "gpt-image-2",
+    "openai_text_model": "gpt-4.1-mini",
+    "openai_text_endpoint_mode": "chat_completions",
     "ollama_text_model": "qwen2.5:0.5b",
     "comfyui_base_url": "http://127.0.0.1:8188",
     "output_dir": "data/exports",

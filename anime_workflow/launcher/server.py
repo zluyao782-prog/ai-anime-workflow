@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 import mimetypes
 import os
 import subprocess
 import sys
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,15 +14,18 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.parse import unquote
 
+from anime_workflow.imports.adaptation import build_episode_drafts, build_import_record, clean_source_text, split_short_video_episodes
+from anime_workflow.imports.document_reader import extract_document_text
 from anime_workflow.launcher.config import LauncherConfigStore
 from anime_workflow.launcher.services import ComfyUIService, PROJECT_ROOT, environment_status, tail_file
 from anime_workflow.jobs.runner import JobRunner
 from anime_workflow.jobs.store import JobStore
-from anime_workflow.projects.models import slug as project_slug
+from anime_workflow.projects.models import clamp_int, slug as project_slug
 from anime_workflow.projects.store import ProjectStore
 from anime_workflow.services.anime_api_adapter import MockAnimeProvider, OpenAIImageProvider
 from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images
 from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard, storyboard_path
+from anime_workflow.story.providers import storyboard_provider_from_config
 
 
 CONFIG_PATH = PROJECT_ROOT / "config/settings.local.json"
@@ -29,6 +34,7 @@ WINDOWS_CJK_FONT = Path("/mnt/c/Windows/Fonts/msyh.ttc")
 STORYBOARD_DIR = PROJECT_ROOT / "data/storyboards"
 PROJECTS_DIR = PROJECT_ROOT / "data/projects"
 JOBS_DIR = PROJECT_ROOT / "data/jobs"
+IMPORTS_DIR = PROJECT_ROOT / "data/imports"
 SOURCE_FRAME_DIR = PROJECT_ROOT / "data/assets/source_frames"
 ANIME_FRAME_DIR = PROJECT_ROOT / "data/assets/anime_frames"
 API_METADATA_DIR = PROJECT_ROOT / "data/assets/api_metadata"
@@ -120,6 +126,12 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/jobs/"):
             self._handle_job_post(parsed.path)
+            return
+        if parsed.path == "/api/imports/adapt":
+            self._handle_import_adapt()
+            return
+        if parsed.path == "/api/storyboard/generate":
+            self._handle_storyboard_generate()
             return
         if parsed.path.startswith("/api/projects/"):
             self._handle_project_post(parsed.path)
@@ -372,7 +384,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             if production_route:
                 _, episode_id, action = production_route
                 if action == "storyboard":
-                    self._handle_project_episode_storyboard(project_id, episode_id)
+                    self._handle_project_episode_storyboard(project_id, episode_id, body)
                     return
                 if action == "images":
                     self._handle_project_episode_images(project_id, episode_id, body)
@@ -403,9 +415,10 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             self._mark_episode_failed(project_id, episode_id, exc)
             self._json_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _handle_project_episode_storyboard(self, project_id: str, episode_id: str) -> None:
+    def _handle_project_episode_storyboard(self, project_id: str, episode_id: str, body: dict[str, Any] | None = None) -> None:
+        body = body or {}
         values = self.project_store.build_storyboard_values(project_id, episode_id)
-        storyboard = generate_storyboard(values)
+        storyboard = self._generate_storyboard_from_values(values, body)
         path = save_storyboard(storyboard, STORYBOARD_DIR)
         episode = self.project_store.update_episode(
             project_id,
@@ -413,6 +426,114 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             {"status": "storyboarded", "storyboard_path": str(path), "error": ""},
         )
         self._json({"ok": True, "storyboard": storyboard, "episode": episode, "storyboard_path": str(path)})
+
+    def _handle_storyboard_generate(self) -> None:
+        try:
+            body = self._read_json()
+            project_id = str(body.get("project_id") or "").strip()
+            episode_id = str(body.get("episode_id") or "").strip()
+            values = self.project_store.build_storyboard_values(project_id, episode_id)
+            storyboard = self._generate_storyboard_from_values(values, body)
+            path = save_storyboard(storyboard, STORYBOARD_DIR)
+            episode = self.project_store.update_episode(
+                project_id,
+                episode_id,
+                {"status": "storyboarded", "storyboard_path": str(path), "error": ""},
+            )
+            self._json({"ok": True, "storyboard": storyboard, "episode": episode, "storyboard_path": str(path)})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_import_adapt(self) -> None:
+        try:
+            body = self._read_json()
+            filename = str(body.get("filename") or "source.txt")
+            text = self._document_text_from_body(body, filename)
+            cleaned = clean_source_text(text)
+            duration_seconds = clamp_int(body.get("duration_seconds"), 30, 180, 60)
+            shot_count = clamp_int(body.get("shot_count"), 1, 24, 8)
+            max_episodes = clamp_int(body.get("max_episodes"), 1, 50, 10)
+            storyboard_provider_name = str(body.get("storyboard_provider") or "local").lower()
+            provider = storyboard_provider_from_config(
+                self.config_store.load(),
+                storyboard_provider_name,
+                confirm_openai=body.get("confirm_openai") is True,
+            )
+            project = self.project_store.save_project(
+                {
+                    "project_id": body.get("project_id") or body.get("project_name") or "adapted_project",
+                    "name": body.get("project_name") or body.get("project_id") or "导入改编项目",
+                    "genre": body.get("genre") or "悬疑",
+                    "platform": body.get("platform") or "douyin",
+                    "premise": cleaned[:240],
+                    "default_duration_seconds": duration_seconds,
+                    "default_shot_count": shot_count,
+                    "default_style_id": body.get("style_id") or "clean_anime_drama",
+                }
+            )
+            chunks = split_short_video_episodes(cleaned, duration_seconds, max_episodes)
+            drafts = build_episode_drafts(chunks, duration_seconds, shot_count)
+            episodes = [self.project_store.save_episode(project["project_id"], draft) for draft in drafts]
+            storyboarded = []
+            for episode in episodes:
+                values = self.project_store.build_storyboard_values(project["project_id"], episode["episode_id"])
+                if episode.get("source_excerpt"):
+                    values["premise"] = f"{values.get('premise', '')}。原文片段：{episode['source_excerpt']}".strip("。")
+                storyboard = provider.generate(values)
+                path = save_storyboard(storyboard, STORYBOARD_DIR)
+                storyboarded.append(
+                    self.project_store.update_episode(
+                        project["project_id"],
+                        episode["episode_id"],
+                        {"status": "storyboarded", "storyboard_path": str(path), "error": ""},
+                    )
+                )
+            import_id = f"import_{uuid.uuid4().hex[:12]}"
+            imports_dir = Path(getattr(self.server, "imports_dir", IMPORTS_DIR))
+            cleaned_path = imports_dir / f"{import_id}.txt"
+            cleaned_path.parent.mkdir(parents=True, exist_ok=True)
+            cleaned_path.write_text(cleaned, encoding="utf-8")
+            record = build_import_record(
+                import_id=import_id,
+                project_id=project["project_id"],
+                filename=filename,
+                content_type=content_type_for_filename(filename),
+                cleaned_text_path=str(cleaned_path),
+                text_length=len(cleaned),
+                episode_ids=[episode["episode_id"] for episode in storyboarded],
+                settings={
+                    "platform": project["platform"],
+                    "duration_seconds": duration_seconds,
+                    "shot_count": shot_count,
+                    "max_episodes": max_episodes,
+                    "segmentation_mode": "short_video",
+                    "storyboard_provider": storyboard_provider_name,
+                },
+            )
+            (imports_dir / f"{record['import_id']}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._json({"ok": True, "import": record, "project": project, "episodes": storyboarded})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _document_text_from_body(self, body: dict[str, Any], filename: str) -> str:
+        if body.get("text"):
+            return extract_document_text(filename, str(body["text"]).encode("utf-8"))
+        encoded = str(body.get("content_base64") or "")
+        if not encoded:
+            raise ValueError("document text is empty")
+        return extract_document_text(filename, base64.b64decode(encoded))
+
+    def _generate_storyboard_from_values(self, values: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        provider = storyboard_provider_from_config(
+            self.config_store.load(),
+            str(body.get("provider") or body.get("storyboard_provider") or "local"),
+            confirm_openai=body.get("confirm_openai") is True,
+        )
+        return provider.generate(values)
 
     def _handle_project_episode_images(self, project_id: str, episode_id: str, body: dict[str, Any]) -> None:
         storyboard_file = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
@@ -638,6 +759,10 @@ def content_type_for(path: Path) -> str:
         return "text/html; charset=utf-8"
     guessed = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return guessed
+
+
+def content_type_for_filename(filename: str) -> str:
+    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
 def configured_output_dir(config: dict[str, Any]) -> Path:

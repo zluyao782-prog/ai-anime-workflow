@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import base64
 import json
 import os
 import threading
@@ -401,6 +402,72 @@ class LauncherServerTest(unittest.TestCase):
                 self.assertEqual(retried["job"]["provider"], "openai")
             finally:
                 self.stop_server(server, thread)
+
+    def test_imports_api_adapts_text_into_project_episodes_and_local_storyboards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_imports_dir = launcher_server.IMPORTS_DIR
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.IMPORTS_DIR = Path(tmp) / "imports"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                source = "雨夜主角收到匿名信。\n\n线索指向失踪的人。\n\n结尾出现新的号码。" * 20
+                status, payload = self.request_json(
+                    server,
+                    "/api/imports/adapt",
+                    {
+                        "filename": "story.txt",
+                        "content_base64": base64.b64encode(source.encode("utf-8")).decode("ascii"),
+                        "project_id": "rain",
+                        "project_name": "雨夜侦探",
+                        "genre": "悬疑",
+                        "platform": "douyin",
+                        "duration_seconds": 30,
+                        "shot_count": 3,
+                        "max_episodes": 2,
+                        "storyboard_provider": "local",
+                    },
+                )
+
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["project"]["project_id"], "rain")
+                self.assertGreaterEqual(len(payload["episodes"]), 1)
+                self.assertEqual(payload["episodes"][0]["status"], "storyboarded")
+                self.assertTrue(Path(payload["episodes"][0]["storyboard_path"]).exists())
+                self.assertTrue((launcher_server.IMPORTS_DIR / f"{payload['import']['import_id']}.json").exists())
+            finally:
+                self.stop_server(server, thread)
+                launcher_server.STORYBOARD_DIR = previous_storyboard_dir
+                launcher_server.IMPORTS_DIR = previous_imports_dir
+
+    def test_imports_api_requires_openai_storyboard_confirmation_and_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_imports_dir = launcher_server.IMPORTS_DIR
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.IMPORTS_DIR = Path(tmp) / "imports"
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            body = {
+                "filename": "story.txt",
+                "text": "雨夜主角收到匿名信。\n\n线索指向失踪的人。",
+                "project_id": "rain",
+                "project_name": "雨夜侦探",
+                "storyboard_provider": "openai",
+            }
+            try:
+                status, payload = self.request_json(server, "/api/imports/adapt", body)
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("openai storyboard provider requires confirmation", payload["error"])
+
+                status, payload = self.request_json(server, "/api/imports/adapt", {**body, "confirm_openai": True})
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("OpenAI API Key is not configured", payload["error"])
+            finally:
+                self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
+                launcher_server.IMPORTS_DIR = previous_imports_dir
 
     def test_project_episode_production_endpoints_update_episode_statuses(self):
         with tempfile.TemporaryDirectory() as tmp:

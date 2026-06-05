@@ -117,6 +117,7 @@ class ProjectStore:
             "storyboard_path": str(value_from(values, existing, "storyboard_path", "")),
             "video_path": str(value_from(values, existing, "video_path", "")),
             "error": str(value_from(values, existing, "error", "")),
+            "source_excerpt": str(value_from(values, existing, "source_excerpt", "")),
             "created_at": existing.get("created_at") or now_iso(),
             "updated_at": now_iso(),
         }

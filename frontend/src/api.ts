@@ -3,6 +3,8 @@ export type PublicConfig = {
   openai_api_key_configured: boolean;
   openai_base_url: string;
   openai_image_model: string;
+  openai_text_model: string;
+  openai_text_endpoint_mode: "chat_completions" | "responses";
   ollama_text_model: string;
   comfyui_base_url: string;
   output_dir: string;
@@ -213,6 +215,40 @@ export type ProjectEpisodeProductionResponse = {
   video_path?: string;
 };
 
+export type DocumentAdaptRequest = {
+  filename: string;
+  content_base64?: string;
+  text?: string;
+  project_id: string;
+  project_name: string;
+  genre: string;
+  platform: string;
+  duration_seconds: number;
+  shot_count: number;
+  max_episodes: number;
+  storyboard_provider: "local" | "openai";
+  confirm_openai?: boolean;
+};
+
+export type DocumentImportRecord = {
+  import_id: string;
+  project_id: string;
+  filename: string;
+  content_type: string;
+  text_length: number;
+  cleaned_text_path: string;
+  episode_ids: string[];
+  settings: Record<string, unknown>;
+  created_at: string;
+};
+
+export type DocumentAdaptResponse = {
+  ok: boolean;
+  import: DocumentImportRecord;
+  project: Project;
+  episodes: ProjectEpisode[];
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -323,4 +359,6 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/video`,
       { method: "POST", body: "{}" },
     ),
+  adaptDocument: (payload: DocumentAdaptRequest) =>
+    request<DocumentAdaptResponse>("/api/imports/adapt", { method: "POST", body: JSON.stringify(payload) }),
 };

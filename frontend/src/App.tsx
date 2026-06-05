@@ -15,12 +15,14 @@ import {
   Server,
   Settings,
   Square,
+  Upload,
   Video,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   Character,
+  DocumentAdaptResponse,
   EpisodeStoryboardRequest,
   Job,
   JobItem,
@@ -42,6 +44,7 @@ const navItems = [
   { value: "characters", label: "角色库", icon: Bot },
   { value: "styles", label: "风格模板", icon: Image },
   { value: "episode-studio", label: "剧集生产", icon: Clapperboard },
+  { value: "document-adapt", label: "文档改编", icon: Upload },
   { value: "outputs", label: "成品库", icon: Video },
   { value: "services", label: "服务启动", icon: Server },
   { value: "config", label: "API 配置", icon: KeyRound },
@@ -56,6 +59,8 @@ const defaultConfig: PublicConfig = {
   openai_api_key_configured: false,
   openai_base_url: "https://aigate.zhixingjidian.cn",
   openai_image_model: "gpt-image-2",
+  openai_text_model: "gpt-4.1-mini",
+  openai_text_endpoint_mode: "chat_completions",
   ollama_text_model: "qwen2.5:0.5b",
   comfyui_base_url: "http://127.0.0.1:8188",
   output_dir: "data/exports",
@@ -106,6 +111,19 @@ const defaultStyleDraft = {
   provider: "mock",
 };
 
+const defaultDocumentDraft = {
+  filename: "story.txt",
+  text: "雨夜主角收到匿名信，发现失踪案和自己有关。",
+  project_id: "adapted_drama",
+  project_name: "导入改编短剧",
+  genre: "悬疑",
+  platform: "douyin",
+  duration_seconds: 60,
+  shot_count: 8,
+  max_episodes: 5,
+  storyboard_provider: "local" as "local" | "openai",
+};
+
 export function App() {
   const [activeTab, setActiveTab] = useState<TabValue>("overview");
   const [status, setStatus] = useState<LauncherStatus | null>(null);
@@ -139,6 +157,10 @@ export function App() {
   const [selectedEpisodeIds, setSelectedEpisodeIds] = useState<string[]>([]);
   const [jobStepMode, setJobStepMode] = useState<"full" | JobStep>("full");
   const [jobProvider, setJobProvider] = useState<JobProvider>("mock");
+  const [documentDraft, setDocumentDraft] = useState(defaultDocumentDraft);
+  const [documentContentBase64, setDocumentContentBase64] = useState("");
+  const [documentResult, setDocumentResult] = useState<DocumentAdaptResponse | null>(null);
+  const [documentLog, setDocumentLog] = useState("导入 txt、markdown 或可复制文本 PDF，按短视频节奏自动分集并生成分镜。");
   const currentProjectIdRef = useRef(currentProjectId);
 
   const refreshStatus = async () => {
@@ -272,6 +294,8 @@ export function App() {
         openai_api_key: apiKeyDraft,
         openai_base_url: configDraft.openai_base_url,
         openai_image_model: configDraft.openai_image_model,
+        openai_text_model: configDraft.openai_text_model,
+        openai_text_endpoint_mode: configDraft.openai_text_endpoint_mode,
         ollama_text_model: configDraft.ollama_text_model,
         comfyui_base_url: configDraft.comfyui_base_url,
         output_dir: configDraft.output_dir,
@@ -555,6 +579,38 @@ export function App() {
       await refreshProjectLibrary(projectEpisode.project_id);
     });
 
+  const selectDocumentFile = (file: File | null) =>
+    runBusy("document-file", async () => {
+      if (!file) return;
+      const content = await file.arrayBuffer();
+      setDocumentContentBase64(arrayBufferToBase64(content));
+      setDocumentDraft((current) => ({ ...current, filename: file.name, text: "" }));
+      setDocumentLog(`已载入文件：${file.name}，${formatBytes(file.size)}`);
+    });
+
+  const adaptDocument = () =>
+    runBusy("document-adapt", async () => {
+      if (documentDraft.storyboard_provider === "openai") {
+        const confirmed = window.confirm("将调用外部文本 API 生成分镜，可能消耗额度。是否继续？");
+        if (!confirmed) {
+          setNotice("已取消外部文本 API 分镜生成。");
+          return;
+        }
+      }
+      const payload = {
+        ...documentDraft,
+        content_base64: documentContentBase64 || undefined,
+        text: documentContentBase64 ? undefined : documentDraft.text,
+        confirm_openai: documentDraft.storyboard_provider === "openai",
+      };
+      const result = await api.adaptDocument(payload);
+      setDocumentResult(result);
+      setDocumentLog(`已生成 ${result.episodes.length} 集，导入记录：${result.import.import_id}`);
+      currentProjectIdRef.current = result.project.project_id;
+      setCurrentProjectId(result.project.project_id);
+      await refreshProjectLibrary(result.project.project_id);
+    });
+
   const disk = status?.disk["/mnt/d"];
   const statusCards = useMemo(() => buildStatusCards(status, config), [status, config]);
   const imageReadyCount = episode?.shots.filter((shot) => Boolean(shot.anime_image)).length ?? 0;
@@ -829,6 +885,117 @@ export function App() {
                   <EmptyState text="当前项目还没有风格模板。" />
                 )}
               </Panel>
+            </section>
+          </Tabs.Content>
+
+          <Tabs.Content value="document-adapt">
+            <section className="grid grid-cols-[420px_minmax(0,1fr)] gap-3 max-[1080px]:grid-cols-1">
+              <Panel title="文档导入" icon={Upload}>
+                <div className="grid gap-3">
+                  <Field label="源文件">
+                    <input
+                      className="input py-1.5"
+                      type="file"
+                      accept=".txt,.md,.markdown,.pdf"
+                      onChange={(event) => selectDocumentFile(event.target.files?.[0] ?? null)}
+                    />
+                  </Field>
+                  <Field label="或粘贴文本">
+                    <textarea
+                      className="input min-h-[160px] resize-y py-2 leading-6"
+                      value={documentDraft.text}
+                      onChange={(event) => {
+                        setDocumentContentBase64("");
+                        setDocumentDraft({ ...documentDraft, text: event.target.value, filename: "pasted.txt" });
+                      }}
+                    />
+                  </Field>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="项目 ID">
+                      <input className="input" value={documentDraft.project_id} onChange={(event) => setDocumentDraft({ ...documentDraft, project_id: event.target.value })} />
+                    </Field>
+                    <Field label="项目名称">
+                      <input className="input" value={documentDraft.project_name} onChange={(event) => setDocumentDraft({ ...documentDraft, project_name: event.target.value })} />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="题材">
+                      <input className="input" value={documentDraft.genre} onChange={(event) => setDocumentDraft({ ...documentDraft, genre: event.target.value })} />
+                    </Field>
+                    <Field label="平台">
+                      <select className="input" value={documentDraft.platform} onChange={(event) => setDocumentDraft({ ...documentDraft, platform: event.target.value })}>
+                        <option value="douyin">抖音</option>
+                        <option value="bilibili">B站</option>
+                      </select>
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Field label="每集时长">
+                      <select className="input" value={documentDraft.duration_seconds} onChange={(event) => setDocumentDraft({ ...documentDraft, duration_seconds: Number(event.target.value) })}>
+                        <option value={30}>30 秒</option>
+                        <option value={60}>60 秒</option>
+                        <option value={90}>90 秒</option>
+                        <option value={180}>180 秒</option>
+                      </select>
+                    </Field>
+                    <Field label="镜头数">
+                      <select className="input" value={documentDraft.shot_count} onChange={(event) => setDocumentDraft({ ...documentDraft, shot_count: Number(event.target.value) })}>
+                        <option value={6}>6 镜</option>
+                        <option value={8}>8 镜</option>
+                        <option value={12}>12 镜</option>
+                      </select>
+                    </Field>
+                    <Field label="最多集数">
+                      <input className="input" type="number" min={1} max={50} value={documentDraft.max_episodes} onChange={(event) => setDocumentDraft({ ...documentDraft, max_episodes: Number(event.target.value) })} />
+                    </Field>
+                  </div>
+                  <Field label="分镜生成">
+                    <select className="input" value={documentDraft.storyboard_provider} onChange={(event) => setDocumentDraft({ ...documentDraft, storyboard_provider: event.target.value as "local" | "openai" })}>
+                      <option value="local">本地规则</option>
+                      <option value="openai">OpenAI-compatible 文本 API</option>
+                    </select>
+                  </Field>
+                  <Button type="button" onClick={adaptDocument} busy={busyAction === "document-adapt"} icon={Upload}>
+                    导入并生成分镜
+                  </Button>
+                </div>
+              </Panel>
+
+              <div className="grid gap-3">
+                <Panel title="改编结果" icon={FileText}>
+                  <div className="break-all rounded-ui border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-6 text-ink-700">{documentLog}</div>
+                  {documentResult ? (
+                    <div className="mt-3 grid gap-2">
+                      <div className="rounded-ui border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                        项目：<span className="font-mono">{documentResult.project.project_id}</span> / 导入：<span className="font-mono">{documentResult.import.import_id}</span>
+                      </div>
+                      {documentResult.episodes.map((item) => (
+                        <article key={item.episode_id} className="rounded-ui border border-line bg-white p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm font-semibold">{item.title}</div>
+                            <span className="rounded-ui bg-emerald-50 px-2 py-1 text-xs text-emerald-700">{item.status}</span>
+                          </div>
+                          <div className="mt-1 font-mono text-xs text-ink-500">
+                            {item.episode_id} / {item.duration_seconds}s / {item.shot_count} 镜
+                          </div>
+                          <div className="mt-2 line-clamp-2 text-sm leading-6 text-ink-700">{item.premise}</div>
+                          {item.storyboard_path && <div className="mt-2 break-all font-mono text-[11px] text-ink-500">{item.storyboard_path}</div>}
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptyState text="导入后会在这里显示生成的剧集。" />
+                  )}
+                </Panel>
+                <Panel title="分镜 API" icon={KeyRound}>
+                  <div className="grid gap-2 font-mono text-xs text-ink-600">
+                    <div>Base URL: {config.openai_base_url}</div>
+                    <div>Text model: {config.openai_text_model}</div>
+                    <div>Endpoint: {config.openai_text_endpoint_mode}</div>
+                    <div>Key: {config.openai_api_key_configured ? config.openai_api_key : "未配置"}</div>
+                  </div>
+                </Panel>
+              </div>
             </section>
           </Tabs.Content>
 
@@ -1120,6 +1287,15 @@ export function App() {
               </Field>
               <Field label="图片模型">
                 <input className="input" name="openai_image_model" value={configDraft.openai_image_model} onChange={(event) => setConfigDraft({ ...configDraft, openai_image_model: event.target.value })} />
+              </Field>
+              <Field label="分镜文本模型">
+                <input className="input" name="openai_text_model" value={configDraft.openai_text_model} onChange={(event) => setConfigDraft({ ...configDraft, openai_text_model: event.target.value })} />
+              </Field>
+              <Field label="分镜接口模式">
+                <select className="input" name="openai_text_endpoint_mode" value={configDraft.openai_text_endpoint_mode} onChange={(event) => setConfigDraft({ ...configDraft, openai_text_endpoint_mode: event.target.value as "chat_completions" | "responses" })}>
+                  <option value="chat_completions">/v1/chat/completions</option>
+                  <option value="responses">/v1/responses</option>
+                </select>
               </Field>
               <Field label="文本模型">
                 <input className="input" name="ollama_text_model" value={configDraft.ollama_text_model} onChange={(event) => setConfigDraft({ ...configDraft, ollama_text_model: event.target.value })} />
@@ -1586,6 +1762,15 @@ function formatBytes(value: number) {
     unitIndex += 1;
   }
   return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
+  }
+  return window.btoa(binary);
 }
 
 function formatTime(value: string | number) {
