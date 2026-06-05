@@ -10,6 +10,7 @@ from anime_workflow.projects.models import slug
 VALID_PROVIDERS = {"mock", "openai"}
 VALID_STATUSES = {"queued", "running", "completed", "failed", "cancelled"}
 VALID_STEPS = {"storyboard", "images", "video"}
+VALID_ITEM_STATUSES = {"pending", "running", "completed", "failed", "cancelled", "skipped"}
 
 
 def now_iso() -> str:
@@ -49,6 +50,58 @@ def normalize_episode_ids(values: Any) -> list[str]:
             raise ValueError("episode_id is invalid")
         episode_ids.append(normalized)
     return episode_ids
+
+
+def step_sequence_from(step: str) -> list[str]:
+    if step == "storyboard":
+        return ["storyboard", "images", "video"]
+    if step == "images":
+        return ["images", "video"]
+    if step == "video":
+        return ["video"]
+    raise ValueError(f"invalid step: {step}")
+
+
+def default_job_items(episode_ids: list[str], steps: list[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "episode_id": episode_id,
+            "step": step,
+            "status": "pending",
+            "error": "",
+            "output_path": "",
+            "started_at": "",
+            "finished_at": "",
+        }
+        for episode_id in episode_ids
+        for step in steps
+    ]
+
+
+def normalize_items(values: Any, episode_ids: list[str], steps: list[str]) -> list[dict[str, Any]]:
+    defaults = {(item["episode_id"], item["step"]): item for item in default_job_items(episode_ids, steps)}
+    raw_items = values if isinstance(values, list) else []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        episode_id = str(raw.get("episode_id") or "").strip()
+        step = str(raw.get("step") or "").strip()
+        key = (episode_id, step)
+        if key not in defaults:
+            continue
+        status = str(raw.get("status") or "pending").strip()
+        if status not in VALID_ITEM_STATUSES:
+            status = "pending"
+        defaults[key] = {
+            "episode_id": episode_id,
+            "step": step,
+            "status": status,
+            "error": str(raw.get("error") or ""),
+            "output_path": str(raw.get("output_path") or ""),
+            "started_at": str(raw.get("started_at") or ""),
+            "finished_at": str(raw.get("finished_at") or ""),
+        }
+    return [defaults[(episode_id, step)] for episode_id in episode_ids for step in steps]
 
 
 def job_from(values: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -95,4 +148,5 @@ def job_from(values: dict[str, Any], existing: dict[str, Any] | None = None) -> 
         "updated_at": now_iso(),
         "started_at": str(values.get("started_at", existing.get("started_at", "")) or ""),
         "finished_at": str(values.get("finished_at", existing.get("finished_at", "")) or ""),
+        "items": normalize_items(values.get("items", existing.get("items")), episode_ids, steps),
     }

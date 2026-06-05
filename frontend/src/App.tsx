@@ -23,6 +23,7 @@ import {
   Character,
   EpisodeStoryboardRequest,
   Job,
+  JobItem,
   JobProvider,
   JobStep,
   LauncherStatus,
@@ -128,6 +129,8 @@ export function App() {
   const [projectEpisodes, setProjectEpisodes] = useState<ProjectEpisode[]>([]);
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState("");
+  const [selectedJobDetail, setSelectedJobDetail] = useState<Job | null>(null);
   const [projectDraft, setProjectDraft] = useState(defaultProjectDraft);
   const [characterDraft, setCharacterDraft] = useState(defaultCharacterDraft);
   const [styleDraft, setStyleDraft] = useState(defaultStyleDraft);
@@ -180,7 +183,18 @@ export function App() {
   const refreshJobs = async () => {
     const data = await api.listJobs();
     setJobs(data.jobs);
+    if (selectedJobId) {
+      const selected = data.jobs.find((job) => job.job_id === selectedJobId);
+      if (selected) setSelectedJobDetail(selected);
+    }
     return data.jobs;
+  };
+
+  const loadJobDetail = async (jobId: string) => {
+    const data = await api.getJob(jobId);
+    setSelectedJobId(jobId);
+    setSelectedJobDetail(data.job);
+    return data.job;
   };
 
   useEffect(() => {
@@ -214,6 +228,15 @@ export function App() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [jobs]);
+
+  useEffect(() => {
+    if (!selectedJobId || !selectedJobDetail) return;
+    if (selectedJobDetail.status !== "queued" && selectedJobDetail.status !== "running") return;
+    const timer = window.setInterval(() => {
+      loadJobDetail(selectedJobId).catch((error: Error) => setNotice(error.message));
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [selectedJobId, selectedJobDetail]);
 
   const runBusy = async (name: string, action: () => Promise<void>) => {
     setBusyAction(name);
@@ -444,6 +467,47 @@ export function App() {
       }
       await api.retryJob(job.job_id, job.provider === "openai");
       await refreshJobs();
+    });
+
+  const confirmOpenAIRetry = (job: Job, label: string) => {
+    if (job.provider !== "openai") return true;
+    return window.confirm(`将重试 gpt-image-2 API 任务 ${label}，可能消耗真实额度，是否继续？`);
+  };
+
+  const retryFailedJob = (job: Job) =>
+    runBusy(`job-retry-failed-${job.job_id}`, async () => {
+      if (!confirmOpenAIRetry(job, `${job.job_id} 的失败步骤`)) {
+        setNotice("已取消真实 API 重跑。");
+        return;
+      }
+      const result = await api.retryFailedJob(job.job_id, job.provider === "openai");
+      setNotice("失败步骤已加入重跑队列");
+      setEpisodeLog(`已创建重跑任务：${result.job.job_id}`);
+      await Promise.all([refreshJobs(), loadJobDetail(job.job_id)]);
+    });
+
+  const retryJobEpisode = (job: Job, episodeId: string) =>
+    runBusy(`job-retry-episode-${job.job_id}-${episodeId}`, async () => {
+      if (!confirmOpenAIRetry(job, `${job.job_id} / ${episodeId}`)) {
+        setNotice("已取消真实 API 重跑。");
+        return;
+      }
+      const result = await api.retryJobEpisode(job.job_id, episodeId, job.provider === "openai");
+      setNotice("本集已加入重跑队列");
+      setEpisodeLog(`已创建重跑任务：${result.job.job_id}`);
+      await Promise.all([refreshJobs(), loadJobDetail(job.job_id)]);
+    });
+
+  const retryJobEpisodeFromStep = (job: Job, episodeId: string, step: JobStep) =>
+    runBusy(`job-retry-step-${job.job_id}-${episodeId}-${step}`, async () => {
+      if (!confirmOpenAIRetry(job, `${job.job_id} / ${episodeId} / ${jobStepLabel(step)}`)) {
+        setNotice("已取消真实 API 重跑。");
+        return;
+      }
+      const result = await api.retryJobEpisodeFromStep(job.job_id, episodeId, step, job.provider === "openai");
+      setNotice("指定步骤已加入重跑队列");
+      setEpisodeLog(`已创建重跑任务：${result.job.job_id}`);
+      await Promise.all([refreshJobs(), loadJobDetail(job.job_id)]);
     });
 
   const createProjectEpisodeStoryboard = (projectEpisode: ProjectEpisode) =>
@@ -922,13 +986,31 @@ export function App() {
                   {currentProjectJobs.length ? (
                     <div className="grid gap-2">
                       {currentProjectJobs.map((job) => (
-                        <JobRow key={job.job_id} job={job} busyAction={busyAction} onCancel={cancelJob} onRetry={retryJob} />
+                        <JobRow
+                          key={job.job_id}
+                          job={job}
+                          busyAction={busyAction}
+                          selected={selectedJobId === job.job_id}
+                          onDetail={(selectedJob) => runBusy(`job-detail-${selectedJob.job_id}`, async () => { await loadJobDetail(selectedJob.job_id); })}
+                          onCancel={cancelJob}
+                          onRetry={retryJob}
+                        />
                       ))}
                     </div>
                   ) : (
                     <EmptyState text="当前项目还没有队列任务。" />
                   )}
                 </Panel>
+
+                {selectedJobDetail && (
+                  <JobDetailPanel
+                    job={selectedJobDetail}
+                    busyAction={busyAction}
+                    onRetryFailed={retryFailedJob}
+                    onRetryEpisode={retryJobEpisode}
+                    onRetryStep={retryJobEpisodeFromStep}
+                  />
+                )}
 
                 <section className="grid grid-cols-4 gap-3 max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
                   <StatusMetric label="分镜" value={episode ? `${episode.shots.length} 条` : "未生成"} />
@@ -1206,17 +1288,21 @@ function EpisodeRow({
 function JobRow({
   job,
   busyAction,
+  selected,
+  onDetail,
   onCancel,
   onRetry,
 }: {
   job: Job;
   busyAction: string | null;
+  selected: boolean;
+  onDetail: (job: Job) => void;
   onCancel: (job: Job) => void;
   onRetry: (job: Job) => void;
 }) {
   const active = job.status === "queued" || job.status === "running";
   return (
-    <article className="rounded-ui border border-line bg-white p-3">
+    <article className={clsx("rounded-ui border bg-white p-3", selected ? "border-blue-300 bg-blue-50" : "border-line")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -1233,6 +1319,15 @@ function JobRow({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            type="button"
+            onClick={() => onDetail(job)}
+            busy={busyAction === `job-detail-${job.job_id}`}
+          >
+            详情
+          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -1264,6 +1359,155 @@ function JobRow({
       </div>
       {job.error && <div className="mt-2 break-all rounded-ui bg-red-50 px-2.5 py-2 font-mono text-xs leading-5 text-red-700">{job.error}</div>}
     </article>
+  );
+}
+
+function JobDetailPanel({
+  job,
+  busyAction,
+  onRetryFailed,
+  onRetryEpisode,
+  onRetryStep,
+}: {
+  job: Job;
+  busyAction: string | null;
+  onRetryFailed: (job: Job) => void;
+  onRetryEpisode: (job: Job, episodeId: string) => void;
+  onRetryStep: (job: Job, episodeId: string, step: JobStep) => void;
+}) {
+  const rows = job.episode_ids.map((episodeId) => ({
+    episodeId,
+    storyboard: jobItemFor(job.items, episodeId, "storyboard"),
+    images: jobItemFor(job.items, episodeId, "images"),
+    video: jobItemFor(job.items, episodeId, "video"),
+  }));
+  const failedCount = job.items.filter((item) => item.status === "failed").length;
+  return (
+    <Panel
+      title="任务详情"
+      icon={FileText}
+      action={
+        <Button
+          variant="secondary"
+          size="sm"
+          type="button"
+          onClick={() => onRetryFailed(job)}
+          busy={busyAction === `job-retry-failed-${job.job_id}`}
+          disabled={failedCount === 0}
+        >
+          重跑失败
+        </Button>
+      }
+    >
+      <div className="mb-3 grid gap-1 font-mono text-xs text-ink-500">
+        <div className="break-all">{job.job_id}</div>
+        <div>
+          {job.provider} / {job.steps.join("+")} / {job.status} / {job.progress}%
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-line text-left text-xs text-ink-500">
+              <th className="py-2 pr-3 font-medium">剧集</th>
+              <th className="py-2 pr-3 font-medium">分镜</th>
+              <th className="py-2 pr-3 font-medium">图片</th>
+              <th className="py-2 pr-3 font-medium">视频</th>
+              <th className="py-2 pr-3 font-medium">错误 / 输出</th>
+              <th className="py-2 pr-3 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const rowError = [row.storyboard, row.images, row.video].find((item) => item?.error)?.error || "";
+              const outputPath = row.video?.output_path || row.images?.output_path || row.storyboard?.output_path || "";
+              return (
+                <tr key={row.episodeId} className="border-b border-line align-top">
+                  <td className="py-2 pr-3 font-mono text-xs">{row.episodeId}</td>
+                  <td className="py-2 pr-3">{row.storyboard ? <JobItemBadge item={row.storyboard} /> : <span className="text-xs text-ink-400">不包含</span>}</td>
+                  <td className="py-2 pr-3">{row.images ? <JobItemBadge item={row.images} /> : <span className="text-xs text-ink-400">不包含</span>}</td>
+                  <td className="py-2 pr-3">{row.video ? <JobItemBadge item={row.video} /> : <span className="text-xs text-ink-400">不包含</span>}</td>
+                  <td className="max-w-[280px] py-2 pr-3">
+                    {rowError ? (
+                      <div className="break-all font-mono text-xs leading-5 text-red-700">{rowError}</div>
+                    ) : outputPath ? (
+                      <div className="break-all font-mono text-[11px] leading-5 text-ink-500">{outputPath}</div>
+                    ) : (
+                      <span className="text-xs text-ink-400">暂无输出</span>
+                    )}
+                  </td>
+                  <td className="py-2 pr-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        type="button"
+                        onClick={() => onRetryEpisode(job, row.episodeId)}
+                        busy={busyAction === `job-retry-episode-${job.job_id}-${row.episodeId}`}
+                      >
+                        本集
+                      </Button>
+                      {job.steps.includes("storyboard") && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          type="button"
+                          onClick={() => onRetryStep(job, row.episodeId, "storyboard")}
+                          busy={busyAction === `job-retry-step-${job.job_id}-${row.episodeId}-storyboard`}
+                        >
+                          分镜
+                        </Button>
+                      )}
+                      {job.steps.includes("images") && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          type="button"
+                          onClick={() => onRetryStep(job, row.episodeId, "images")}
+                          busy={busyAction === `job-retry-step-${job.job_id}-${row.episodeId}-images`}
+                        >
+                          图片
+                        </Button>
+                      )}
+                      {job.steps.includes("video") && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          type="button"
+                          onClick={() => onRetryStep(job, row.episodeId, "video")}
+                          busy={busyAction === `job-retry-step-${job.job_id}-${row.episodeId}-video`}
+                        >
+                          视频
+                        </Button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function jobItemFor(items: JobItem[], episodeId: string, step: JobStep) {
+  return items.find((item) => item.episode_id === episodeId && item.step === step);
+}
+
+function JobItemBadge({ item }: { item: JobItem }) {
+  return (
+    <div className="grid gap-1">
+      <span className={clsx("inline-flex w-fit rounded-ui px-2 py-1 text-xs", jobItemStatusClass(item.status))}>
+        {jobItemStatusLabel(item.status)}
+      </span>
+      {(item.started_at || item.finished_at) && (
+        <div className="font-mono text-[11px] leading-4 text-ink-400">
+          {item.finished_at ? formatTime(item.finished_at) : item.started_at ? `开始 ${formatTime(item.started_at)}` : ""}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1365,6 +1609,35 @@ function jobStatusClass(status: Job["status"]) {
   if (status === "completed") return "bg-emerald-50 text-emerald-700";
   if (status === "failed") return "bg-red-50 text-red-700";
   if (status === "cancelled") return "bg-slate-100 text-ink-500";
+  if (status === "running") return "bg-blue-50 text-blue-700";
+  return "bg-amber-50 text-amber-700";
+}
+
+function jobStepLabel(step: JobStep) {
+  const labels: Record<JobStep, string> = {
+    storyboard: "分镜",
+    images: "图片",
+    video: "视频",
+  };
+  return labels[step];
+}
+
+function jobItemStatusLabel(status: JobItem["status"]) {
+  const labels: Record<JobItem["status"], string> = {
+    pending: "等待",
+    running: "运行中",
+    completed: "完成",
+    failed: "失败",
+    cancelled: "取消",
+    skipped: "跳过",
+  };
+  return labels[status];
+}
+
+function jobItemStatusClass(status: JobItem["status"]) {
+  if (status === "completed") return "bg-emerald-50 text-emerald-700";
+  if (status === "failed") return "bg-red-50 text-red-700";
+  if (status === "cancelled" || status === "skipped") return "bg-slate-100 text-ink-500";
   if (status === "running") return "bg-blue-50 text-blue-700";
   return "bg-amber-50 text-amber-700";
 }

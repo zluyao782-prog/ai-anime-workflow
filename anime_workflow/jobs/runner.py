@@ -61,6 +61,7 @@ class JobRunner:
 
     def _run_job(self, job: dict[str, Any]) -> dict[str, Any]:
         if job.get("cancel_requested"):
+            self.job_store.cancel_pending_items(job["job_id"])
             return self.job_store.update_job(
                 job["job_id"],
                 {"status": "cancelled", "progress": 0, "finished_at": now_iso()},
@@ -71,6 +72,7 @@ class JobRunner:
         for episode_id in job["episode_ids"]:
             for step in job["steps"]:
                 if self.job_store.get_job(job["job_id"]).get("cancel_requested"):
+                    self.job_store.cancel_pending_items(job["job_id"])
                     return self.job_store.update_job(
                         job["job_id"],
                         {
@@ -89,7 +91,13 @@ class JobRunner:
                         "progress": self._progress(completed_steps, total_steps),
                     },
                 )
-                self._run_step(job, episode_id, step)
+                self.job_store.set_item_running(job["job_id"], episode_id, step)
+                try:
+                    output_path = self._run_step(job, episode_id, step)
+                except Exception as exc:
+                    self.job_store.set_item_failed(job["job_id"], episode_id, step, str(exc))
+                    raise
+                self.job_store.set_item_completed(job["job_id"], episode_id, step, output_path)
                 completed_steps += 1
                 self.job_store.update_job(
                     job["job_id"],
@@ -111,14 +119,14 @@ class JobRunner:
             },
         )
 
-    def _run_step(self, job: dict[str, Any], episode_id: str, step: str) -> None:
+    def _run_step(self, job: dict[str, Any], episode_id: str, step: str) -> str:
         project_id = job["project_id"]
         if step == "storyboard":
             values = self.project_store.build_storyboard_values(project_id, episode_id)
             storyboard = generate_storyboard(values)
             path = save_storyboard(storyboard, self.storyboard_dir)
             self.project_store.update_episode(project_id, episode_id, {"status": "storyboarded", "storyboard_path": str(path), "error": ""})
-            return
+            return str(path)
 
         if step == "images":
             provider = self._provider(job["provider"])
@@ -133,7 +141,7 @@ class JobRunner:
             )
             saved = save_storyboard(updated, self.storyboard_dir)
             self.project_store.update_episode(project_id, episode_id, {"status": "imaged", "storyboard_path": str(saved), "error": ""})
-            return
+            return str(saved)
 
         if step == "video":
             storyboard_file = storyboard_path(self.storyboard_dir, project_id, episode_id)
@@ -142,7 +150,7 @@ class JobRunner:
             storyboard["video_path"] = str(video)
             save_storyboard(storyboard, self.storyboard_dir)
             self.project_store.update_episode(project_id, episode_id, {"status": "exported", "video_path": str(video), "error": ""})
-            return
+            return str(video)
 
         raise ValueError(f"invalid step: {step}")
 

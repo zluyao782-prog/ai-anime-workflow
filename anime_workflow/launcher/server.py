@@ -78,6 +78,9 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/jobs":
             self._handle_job_list()
             return
+        if parsed.path.startswith("/api/jobs/"):
+            self._handle_job_get(parsed.path)
+            return
         if parsed.path == "/api/projects":
             self._handle_project_list()
             return
@@ -277,15 +280,48 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
         except FileNotFoundError as exc:
             self._json_error(exc, HTTPStatus.NOT_FOUND)
 
+    def _handle_job_get(self, path: str) -> None:
+        try:
+            self._json({"ok": True, "job": self.job_store.get_job(job_id_from_api_path(path))})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
     def _handle_job_post(self, path: str) -> None:
         try:
             body = self._read_json()
-            job_id, action = job_action_from_api_path(path)
-            if action == "cancel":
+            action = job_action_from_api_path(path)
+            job_id = action["job_id"]
+            if action["action"] == "cancel":
                 self._json({"ok": True, "job": self.job_store.request_cancel(job_id)})
                 return
-            if action == "retry":
+            if action["action"] == "retry":
                 job = self.job_store.retry_job(job_id, confirm_openai=body.get("confirm_openai") is True)
+                self.job_runner.start()
+                self._json({"ok": True, "job": job})
+                return
+            if action["action"] == "retry_failed":
+                job = self.job_store.create_failed_retry_job(job_id, confirm_openai=body.get("confirm_openai") is True)
+                self.job_runner.start()
+                self._json({"ok": True, "job": job})
+                return
+            if action["action"] == "retry_episode":
+                job = self.job_store.create_episode_retry_job(
+                    job_id,
+                    action["episode_id"],
+                    confirm_openai=body.get("confirm_openai") is True,
+                )
+                self.job_runner.start()
+                self._json({"ok": True, "job": job})
+                return
+            if action["action"] == "retry_episode_step":
+                job = self.job_store.create_episode_step_retry_job(
+                    job_id,
+                    action["episode_id"],
+                    action["step"],
+                    confirm_openai=body.get("confirm_openai") is True,
+                )
                 self.job_runner.start()
                 self._json({"ok": True, "job": job})
                 return
@@ -547,17 +583,50 @@ def project_episode_action_from_api_path(path: str) -> tuple[str, str, str] | No
     return parts[2].strip(), episode_id, action
 
 
-def job_action_from_api_path(path: str) -> tuple[str, str]:
+def job_id_from_api_path(path: str) -> str:
     parts = project_api_parts(path)
-    if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs":
+    if len(parts) != 3 or parts[0] != "api" or parts[1] != "jobs":
         raise ValueError("job path is invalid")
     job_id = parts[2].strip()
-    action = parts[3].strip()
     if not job_id:
         raise ValueError("job_id is required")
-    if action not in {"cancel", "retry"}:
+    return job_id
+
+
+def job_action_from_api_path(path: str) -> dict[str, str]:
+    parts = project_api_parts(path)
+    if len(parts) < 4 or parts[0] != "api" or parts[1] != "jobs":
+        raise ValueError("job path is invalid")
+    job_id = parts[2].strip()
+    if not job_id:
+        raise ValueError("job_id is required")
+
+    if len(parts) == 4:
+        action = parts[3].strip()
+        if action == "cancel":
+            return {"job_id": job_id, "action": "cancel"}
+        if action == "retry":
+            return {"job_id": job_id, "action": "retry"}
+        if action == "retry-failed":
+            return {"job_id": job_id, "action": "retry_failed"}
         raise ValueError("job action is invalid")
-    return job_id, action
+
+    if len(parts) == 6 and parts[3] == "episodes" and parts[5] == "retry":
+        episode_id = parts[4].strip()
+        if not episode_id:
+            raise ValueError("episode_id is required")
+        return {"job_id": job_id, "action": "retry_episode", "episode_id": episode_id}
+
+    if len(parts) == 8 and parts[3] == "episodes" and parts[5] == "steps" and parts[7] == "retry":
+        episode_id = parts[4].strip()
+        step = parts[6].strip()
+        if not episode_id:
+            raise ValueError("episode_id is required")
+        if step not in {"storyboard", "images", "video"}:
+            raise ValueError("invalid step")
+        return {"job_id": job_id, "action": "retry_episode_step", "episode_id": episode_id, "step": step}
+
+    raise ValueError("job action is invalid")
 
 
 def content_type_for(path: Path) -> str:

@@ -163,6 +163,18 @@ export type JobProvider = "mock" | "openai";
 
 export type JobStep = "storyboard" | "images" | "video";
 
+export type JobItemStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped";
+
+export type JobItem = {
+  episode_id: string;
+  step: JobStep;
+  status: JobItemStatus;
+  error: string;
+  output_path: string;
+  started_at: string;
+  finished_at: string;
+};
+
 export type Job = {
   job_id: string;
   project_id: string;
@@ -181,6 +193,7 @@ export type Job = {
   updated_at: string;
   started_at: string;
   finished_at: string;
+  items: JobItem[];
 };
 
 export type CreateJobRequest = {
@@ -267,6 +280,7 @@ export const api = {
     }),
   listOutputs: () => request<{ ok: boolean; outputs: OutputItem[] }>("/api/outputs"),
   listJobs: () => request<{ ok: boolean; jobs: Job[] }>("/api/jobs"),
+  getJob: (jobId: string) => request<{ ok: boolean; job: Job }>(`/api/jobs/${encodeURIComponent(jobId)}`),
   createJob: (payload: CreateJobRequest) =>
     request<{ ok: boolean; job: Job }>("/api/jobs", { method: "POST", body: JSON.stringify(payload) }),
   cancelJob: (jobId: string) =>
@@ -276,6 +290,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ confirm_openai: confirmOpenai }),
     }),
+  retryFailedJob: (jobId: string, confirmOpenai = false) =>
+    request<{ ok: boolean; job: Job }>(`/api/jobs/${encodeURIComponent(jobId)}/retry-failed`, {
+      method: "POST",
+      body: JSON.stringify({ confirm_openai: confirmOpenai }),
+    }),
+  retryJobEpisode: (jobId: string, episodeId: string, confirmOpenai = false) =>
+    request<{ ok: boolean; job: Job }>(`/api/jobs/${encodeURIComponent(jobId)}/episodes/${encodeURIComponent(episodeId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ confirm_openai: confirmOpenai }),
+    }),
+  retryJobEpisodeFromStep: (jobId: string, episodeId: string, step: JobStep, confirmOpenai = false) =>
+    request<{ ok: boolean; job: Job }>(
+      `/api/jobs/${encodeURIComponent(jobId)}/episodes/${encodeURIComponent(episodeId)}/steps/${encodeURIComponent(step)}/retry`,
+      {
+        method: "POST",
+        body: JSON.stringify({ confirm_openai: confirmOpenai }),
+      },
+    ),
   createProjectStoryboard: (projectId: string, episodeId: string) =>
     request<ProjectEpisodeProductionResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/storyboard`,

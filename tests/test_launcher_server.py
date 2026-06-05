@@ -332,6 +332,76 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server(server, thread)
 
+    def test_jobs_api_reads_detail_and_creates_targeted_retries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = NoopRunner()
+            server, thread = self.with_server(Path(tmp) / "projects", jobs_dir=Path(tmp) / "jobs", job_runner=runner)
+            try:
+                status, created = self.request_json(
+                    server,
+                    "/api/jobs",
+                    {
+                        "project_id": "demo",
+                        "episode_ids": ["episode_001", "episode_002"],
+                        "steps": ["storyboard", "images", "video"],
+                        "provider": "mock",
+                    },
+                )
+                self.assertEqual(status, HTTPStatus.OK)
+                job_id = created["job"]["job_id"]
+                server.job_store.set_item_failed(job_id, "episode_001", "images", "image failed")
+
+                status, detail = self.request_json(server, f"/api/jobs/{job_id}")
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(detail["job"]["job_id"], job_id)
+                self.assertEqual(detail["job"]["items"][1]["status"], "failed")
+
+                status, failed_retry = self.request_json(server, f"/api/jobs/{job_id}/retry-failed", {})
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(failed_retry["job"]["episode_ids"], ["episode_001"])
+                self.assertEqual(failed_retry["job"]["steps"], ["images", "video"])
+
+                status, episode_retry = self.request_json(server, f"/api/jobs/{job_id}/episodes/episode_002/retry", {})
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(episode_retry["job"]["episode_ids"], ["episode_002"])
+                self.assertEqual(episode_retry["job"]["steps"], ["storyboard", "images", "video"])
+
+                status, step_retry = self.request_json(server, f"/api/jobs/{job_id}/episodes/episode_001/steps/video/retry", {})
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(step_retry["job"]["episode_ids"], ["episode_001"])
+                self.assertEqual(step_retry["job"]["steps"], ["video"])
+            finally:
+                self.stop_server(server, thread)
+
+    def test_jobs_api_targeted_openai_retry_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server, thread = self.with_server(Path(tmp) / "projects", jobs_dir=Path(tmp) / "jobs", job_runner=NoopRunner())
+            try:
+                status, created = self.request_json(
+                    server,
+                    "/api/jobs",
+                    {
+                        "project_id": "demo",
+                        "episode_ids": ["episode_001"],
+                        "steps": ["storyboard", "images", "video"],
+                        "provider": "openai",
+                        "confirm_openai": True,
+                    },
+                )
+                self.assertEqual(status, HTTPStatus.OK)
+                job_id = created["job"]["job_id"]
+                server.job_store.set_item_failed(job_id, "episode_001", "images", "image failed")
+
+                status, payload = self.request_json(server, f"/api/jobs/{job_id}/retry-failed", {})
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("openai provider requires confirmation", payload["error"])
+
+                status, retried = self.request_json(server, f"/api/jobs/{job_id}/retry-failed", {"confirm_openai": True})
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(retried["job"]["provider"], "openai")
+            finally:
+                self.stop_server(server, thread)
+
     def test_project_episode_production_endpoints_update_episode_statuses(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_storyboard_dir = launcher_server.STORYBOARD_DIR
