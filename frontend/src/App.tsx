@@ -45,6 +45,7 @@ const navItems = [
   { value: "styles", label: "风格模板", icon: Image },
   { value: "episode-studio", label: "剧集生产", icon: Clapperboard },
   { value: "document-adapt", label: "文档改编", icon: Upload },
+  { value: "storyboard-review", label: "分镜审稿", icon: FileText },
   { value: "outputs", label: "成品库", icon: Video },
   { value: "services", label: "服务启动", icon: Server },
   { value: "config", label: "API 配置", icon: KeyRound },
@@ -161,6 +162,11 @@ export function App() {
   const [documentContentBase64, setDocumentContentBase64] = useState("");
   const [documentResult, setDocumentResult] = useState<DocumentAdaptResponse | null>(null);
   const [documentLog, setDocumentLog] = useState("导入 txt、markdown 或可复制文本 PDF，按短视频节奏自动分集并生成分镜。");
+  const [reviewEpisodeId, setReviewEpisodeId] = useState(defaultEpisodeForm.episode_id);
+  const [reviewStoryboard, setReviewStoryboard] = useState<Storyboard | null>(null);
+  const [reviewShotId, setReviewShotId] = useState("");
+  const [reviewInstruction, setReviewInstruction] = useState("更悬疑，结尾留钩子");
+  const [reviewLog, setReviewLog] = useState("选择项目和剧集，载入分镜后审稿。");
   const currentProjectIdRef = useRef(currentProjectId);
 
   const refreshStatus = async () => {
@@ -611,6 +617,46 @@ export function App() {
       await refreshProjectLibrary(result.project.project_id);
     });
 
+  const loadReviewStoryboard = () =>
+    runBusy("review-load", async () => {
+      const result = await api.getEpisode(currentProjectId, reviewEpisodeId);
+      setReviewStoryboard(result.storyboard);
+      setReviewShotId(result.storyboard.shots[0]?.shot_id ?? "");
+      setReviewLog(`已载入分镜：${result.storyboard_path}`);
+    });
+
+  const saveReviewStoryboard = () =>
+    runBusy("review-save", async () => {
+      if (!reviewStoryboard) throw new Error("请先载入分镜");
+      const result = await api.saveStoryboard(currentProjectId, reviewEpisodeId, reviewStoryboard);
+      setReviewStoryboard(result.storyboard);
+      setReviewLog(`分镜已保存：${result.storyboard_path}`);
+      await refreshProjectLibrary(currentProjectId);
+    });
+
+  const updateReviewStoryboard = (updates: Partial<Storyboard>) => {
+    setReviewStoryboard((current) => (current ? { ...current, ...updates } : current));
+  };
+
+  const updateReviewShot = (shotId: string, updates: Partial<Storyboard["shots"][number]>) => {
+    setReviewStoryboard((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        shots: current.shots.map((shot) => (shot.shot_id === shotId ? { ...shot, ...updates } : shot)),
+      };
+    });
+  };
+
+  const rewriteReviewShot = () =>
+    runBusy("review-rewrite-shot", async () => {
+      if (!reviewStoryboard) throw new Error("请先载入分镜");
+      if (!reviewShotId) throw new Error("请选择要重写的镜头");
+      const result = await api.rewriteStoryboardShot(currentProjectId, reviewEpisodeId, reviewShotId, reviewInstruction, "local");
+      setReviewStoryboard(result.storyboard);
+      setReviewLog(`已本地重写镜头：${reviewShotId}`);
+    });
+
   const disk = status?.disk["/mnt/d"];
   const statusCards = useMemo(() => buildStatusCards(status, config), [status, config]);
   const imageReadyCount = episode?.shots.filter((shot) => Boolean(shot.anime_image)).length ?? 0;
@@ -995,6 +1041,123 @@ export function App() {
                     <div>Key: {config.openai_api_key_configured ? config.openai_api_key : "未配置"}</div>
                   </div>
                 </Panel>
+              </div>
+            </section>
+          </Tabs.Content>
+
+          <Tabs.Content value="storyboard-review">
+            <section className="grid grid-cols-[360px_minmax(0,1fr)] gap-3 max-[1080px]:grid-cols-1">
+              <Panel title="审稿选择" icon={FileText}>
+                <div className="grid gap-3">
+                  <Field label="项目">
+                    <select
+                      className="input"
+                      value={currentProjectId}
+                      onChange={(event) => {
+                        currentProjectIdRef.current = event.target.value;
+                        setCurrentProjectId(event.target.value);
+                        setReviewStoryboard(null);
+                        refreshProjectLibrary(event.target.value).catch((error: Error) => setNotice(error.message));
+                      }}
+                    >
+                      {projects.map((project) => (
+                        <option key={project.project_id} value={project.project_id}>
+                          {project.name} / {project.project_id}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="剧集">
+                    <select className="input" value={reviewEpisodeId} onChange={(event) => setReviewEpisodeId(event.target.value)}>
+                      {projectEpisodes.map((item) => (
+                        <option key={item.episode_id} value={item.episode_id}>
+                          E{item.episode_no} / {item.title} / {item.status}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Button type="button" onClick={loadReviewStoryboard} busy={busyAction === "review-load"} icon={RefreshCw} disabled={!currentProjectId || !reviewEpisodeId}>
+                    载入分镜
+                  </Button>
+                  <div className="break-all rounded-ui border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-6 text-ink-700">{reviewLog}</div>
+                </div>
+              </Panel>
+
+              <div className="grid gap-3">
+                {reviewStoryboard ? (
+                  <>
+                    <Panel title="整集信息" icon={Clapperboard} action={<Button size="sm" type="button" onClick={saveReviewStoryboard} busy={busyAction === "review-save"} icon={Save}>保存</Button>}>
+                      <div className="grid gap-3">
+                        <div className="grid grid-cols-2 gap-2 max-[720px]:grid-cols-1">
+                          <Field label="标题">
+                            <input className="input" value={reviewStoryboard.title} onChange={(event) => updateReviewStoryboard({ title: event.target.value })} />
+                          </Field>
+                          <Field label="主角">
+                            <input className="input" value={reviewStoryboard.protagonist} onChange={(event) => updateReviewStoryboard({ protagonist: event.target.value })} />
+                          </Field>
+                        </div>
+                        <Field label="剧情梗概">
+                          <textarea className="input min-h-[84px] resize-y py-2 leading-6" value={reviewStoryboard.premise} onChange={(event) => updateReviewStoryboard({ premise: event.target.value })} />
+                        </Field>
+                        <Field label="风格 Prompt">
+                          <textarea className="input min-h-[72px] resize-y py-2 leading-6" value={reviewStoryboard.style_preset} onChange={(event) => updateReviewStoryboard({ style_preset: event.target.value })} />
+                        </Field>
+                      </div>
+                    </Panel>
+
+                    <Panel title="单镜头重写" icon={RefreshCw}>
+                      <div className="grid grid-cols-[180px_minmax(0,1fr)_auto] items-end gap-2 max-[820px]:grid-cols-1">
+                        <Field label="镜头">
+                          <select className="input" value={reviewShotId} onChange={(event) => setReviewShotId(event.target.value)}>
+                            {reviewStoryboard.shots.map((shot) => (
+                              <option key={shot.shot_id} value={shot.shot_id}>
+                                {shot.shot_id}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label="重写要求">
+                          <input className="input" value={reviewInstruction} onChange={(event) => setReviewInstruction(event.target.value)} />
+                        </Field>
+                        <Button type="button" onClick={rewriteReviewShot} busy={busyAction === "review-rewrite-shot"} icon={RefreshCw}>
+                          本地重写
+                        </Button>
+                      </div>
+                    </Panel>
+
+                    <Panel title="分镜表" icon={FileText}>
+                      <div className="grid gap-3">
+                        {reviewStoryboard.shots.map((shot) => (
+                          <article key={shot.shot_id} className="grid gap-2 rounded-ui border border-line bg-white p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="rounded-ui bg-blue-50 px-2 py-1 font-mono text-xs font-semibold text-blue-700">{shot.shot_id}</span>
+                              <input className="input h-8 w-24" type="number" min={1} max={60} value={shot.duration} onChange={(event) => updateReviewShot(shot.shot_id, { duration: Number(event.target.value) })} />
+                            </div>
+                            <Field label="画面">
+                              <textarea className="input min-h-[72px] resize-y py-2 leading-6" value={shot.scene} onChange={(event) => updateReviewShot(shot.shot_id, { scene: event.target.value })} />
+                            </Field>
+                            <Field label="台词">
+                              <input className="input" value={shot.dialogue} onChange={(event) => updateReviewShot(shot.shot_id, { dialogue: event.target.value })} />
+                            </Field>
+                            <Field label="图片 Prompt">
+                              <textarea className="input min-h-[84px] resize-y py-2 font-mono text-xs leading-5" value={shot.image_prompt} onChange={(event) => updateReviewShot(shot.shot_id, { image_prompt: event.target.value })} />
+                            </Field>
+                            <div className="grid grid-cols-2 gap-2">
+                              <Field label="镜头">
+                                <input className="input" value={shot.camera} onChange={(event) => updateReviewShot(shot.shot_id, { camera: event.target.value })} />
+                              </Field>
+                              <Field label="情绪">
+                                <input className="input" value={shot.emotion} onChange={(event) => updateReviewShot(shot.shot_id, { emotion: event.target.value })} />
+                              </Field>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </Panel>
+                  </>
+                ) : (
+                  <EmptyState text="选择已有分镜的剧集后载入审稿。" />
+                )}
               </div>
             </section>
           </Tabs.Content>

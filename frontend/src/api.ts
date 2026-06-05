@@ -361,4 +361,19 @@ export const api = {
     ),
   adaptDocument: (payload: DocumentAdaptRequest) =>
     request<DocumentAdaptResponse>("/api/imports/adapt", { method: "POST", body: JSON.stringify(payload) }),
+  saveStoryboard: (projectId: string, episodeId: string, storyboard: Storyboard) =>
+    request<EpisodeResponse>("/api/storyboard/save", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, storyboard }),
+    }),
+  updateStoryboardShot: (projectId: string, episodeId: string, shotId: string, updates: Partial<EpisodeShot>) =>
+    request<EpisodeResponse>("/api/storyboard/shot/update", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, shot_id: shotId, updates }),
+    }),
+  rewriteStoryboardShot: (projectId: string, episodeId: string, shotId: string, instruction: string, provider: "local" | "openai", confirmOpenai = false) =>
+    request<EpisodeResponse>("/api/storyboard/shot/rewrite", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, shot_id: shotId, instruction, provider, confirm_openai: confirmOpenai }),
+    }),
 };

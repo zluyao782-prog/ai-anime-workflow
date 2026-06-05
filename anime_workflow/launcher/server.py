@@ -26,6 +26,7 @@ from anime_workflow.services.anime_api_adapter import MockAnimeProvider, OpenAII
 from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images
 from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard, storyboard_path
 from anime_workflow.story.providers import storyboard_provider_from_config
+from anime_workflow.story.review import rewrite_storyboard_shot_local, update_storyboard_shot, validate_storyboard_for_review
 
 
 CONFIG_PATH = PROJECT_ROOT / "config/settings.local.json"
@@ -132,6 +133,15 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/storyboard/generate":
             self._handle_storyboard_generate()
+            return
+        if parsed.path == "/api/storyboard/save":
+            self._handle_storyboard_save()
+            return
+        if parsed.path == "/api/storyboard/shot/update":
+            self._handle_storyboard_shot_update()
+            return
+        if parsed.path == "/api/storyboard/shot/rewrite":
+            self._handle_storyboard_shot_rewrite()
             return
         if parsed.path.startswith("/api/projects/"):
             self._handle_project_post(parsed.path)
@@ -441,6 +451,64 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 {"status": "storyboarded", "storyboard_path": str(path), "error": ""},
             )
             self._json({"ok": True, "storyboard": storyboard, "episode": episode, "storyboard_path": str(path)})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_storyboard_save(self) -> None:
+        try:
+            body = self._read_json()
+            project_id = str(body.get("project_id") or "").strip()
+            episode_id = str(body.get("episode_id") or "").strip()
+            storyboard = validate_storyboard_for_review(dict(body.get("storyboard") or {}))
+            storyboard["project_id"] = project_id
+            storyboard["episode_id"] = episode_id
+            path = save_storyboard(storyboard, STORYBOARD_DIR)
+            episode = self.project_store.update_episode(
+                project_id,
+                episode_id,
+                {"status": "storyboarded", "storyboard_path": str(path), "error": ""},
+            )
+            self._json({"ok": True, "storyboard": storyboard, "episode": episode, "storyboard_path": str(path)})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_storyboard_shot_update(self) -> None:
+        try:
+            body = self._read_json()
+            project_id = str(body.get("project_id") or "").strip()
+            episode_id = str(body.get("episode_id") or "").strip()
+            shot_id = str(body.get("shot_id") or "").strip()
+            path = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
+            storyboard = update_storyboard_shot(load_storyboard(path), shot_id, dict(body.get("updates") or {}))
+            saved = save_storyboard(storyboard, STORYBOARD_DIR)
+            self.project_store.update_episode(project_id, episode_id, {"status": "storyboarded", "storyboard_path": str(saved), "error": ""})
+            self._json({"ok": True, "storyboard": storyboard, "storyboard_path": str(saved)})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_storyboard_shot_rewrite(self) -> None:
+        try:
+            body = self._read_json()
+            project_id = str(body.get("project_id") or "").strip()
+            episode_id = str(body.get("episode_id") or "").strip()
+            shot_id = str(body.get("shot_id") or "").strip()
+            provider = str(body.get("provider") or "local").lower()
+            if provider == "openai":
+                if body.get("confirm_openai") is not True:
+                    raise ValueError("openai storyboard provider requires confirmation")
+                self._json_error(ValueError("openai shot rewrite is not implemented yet"), HTTPStatus.NOT_IMPLEMENTED)
+                return
+            path = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
+            storyboard = rewrite_storyboard_shot_local(load_storyboard(path), shot_id, str(body.get("instruction") or ""))
+            saved = save_storyboard(storyboard, STORYBOARD_DIR)
+            self.project_store.update_episode(project_id, episode_id, {"status": "storyboarded", "storyboard_path": str(saved), "error": ""})
+            self._json({"ok": True, "storyboard": storyboard, "storyboard_path": str(saved)})
         except ValueError as exc:
             self._json_error(exc, HTTPStatus.BAD_REQUEST)
         except FileNotFoundError as exc:

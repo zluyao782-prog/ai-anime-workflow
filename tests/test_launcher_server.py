@@ -469,6 +469,88 @@ class LauncherServerTest(unittest.TestCase):
                 self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
                 launcher_server.IMPORTS_DIR = previous_imports_dir
 
+    def test_storyboard_review_api_saves_updates_and_rewrites_shots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "示例项目", "default_shot_count": 1})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+                storyboard = sample_review_storyboard()
+
+                status, saved = self.request_json(
+                    server,
+                    "/api/storyboard/save",
+                    {"project_id": "demo", "episode_id": "episode_001", "storyboard": storyboard},
+                )
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(saved["episode"]["status"], "storyboarded")
+                self.assertTrue(Path(saved["storyboard_path"]).exists())
+
+                status, updated = self.request_json(
+                    server,
+                    "/api/storyboard/shot/update",
+                    {
+                        "project_id": "demo",
+                        "episode_id": "episode_001",
+                        "shot_id": "shot_001",
+                        "updates": {"scene": "新的雨夜场景", "dialogue": "新台词"},
+                    },
+                )
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(updated["storyboard"]["shots"][0]["scene"], "新的雨夜场景")
+
+                status, rewritten = self.request_json(
+                    server,
+                    "/api/storyboard/shot/rewrite",
+                    {
+                        "project_id": "demo",
+                        "episode_id": "episode_001",
+                        "shot_id": "shot_001",
+                        "instruction": "更悬疑",
+                        "provider": "local",
+                    },
+                )
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertIn("更悬疑", rewritten["storyboard"]["shots"][0]["scene"])
+            finally:
+                self.stop_server(server, thread)
+                launcher_server.STORYBOARD_DIR = previous_storyboard_dir
+
+    def test_storyboard_review_api_handles_missing_shot_and_openai_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "示例项目", "default_shot_count": 1})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+                self.request_json(
+                    server,
+                    "/api/storyboard/save",
+                    {"project_id": "demo", "episode_id": "episode_001", "storyboard": sample_review_storyboard()},
+                )
+
+                status, payload = self.request_json(
+                    server,
+                    "/api/storyboard/shot/rewrite",
+                    {"project_id": "demo", "episode_id": "episode_001", "shot_id": "missing", "provider": "local"},
+                )
+                self.assertEqual(status, HTTPStatus.NOT_FOUND)
+                self.assertIn("shot not found", payload["error"])
+
+                status, payload = self.request_json(
+                    server,
+                    "/api/storyboard/shot/rewrite",
+                    {"project_id": "demo", "episode_id": "episode_001", "shot_id": "shot_001", "provider": "openai"},
+                )
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("openai storyboard provider requires confirmation", payload["error"])
+            finally:
+                self.stop_server(server, thread)
+                launcher_server.STORYBOARD_DIR = previous_storyboard_dir
+
     def test_project_episode_production_endpoints_update_episode_statuses(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_storyboard_dir = launcher_server.STORYBOARD_DIR
@@ -688,3 +770,31 @@ class LauncherServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def sample_review_storyboard():
+    return {
+        "project_id": "demo",
+        "episode_id": "episode_001",
+        "title": "雨夜来信",
+        "genre": "悬疑",
+        "premise": "雨夜收到匿名信",
+        "protagonist": "林夏",
+        "style_preset": "clean_anime_drama",
+        "platform": "douyin",
+        "duration_seconds": 30,
+        "shot_count": 1,
+        "shots": [
+            {
+                "shot_id": "shot_001",
+                "duration": 30,
+                "scene": "雨夜，信封出现。",
+                "dialogue": "这是谁寄来的？",
+                "image_prompt": "anime rain night letter",
+                "camera": "close-up",
+                "emotion": "suspenseful",
+                "source_image": "",
+                "anime_image": "",
+            }
+        ],
+    }
