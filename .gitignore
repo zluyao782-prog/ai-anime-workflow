@@ -1,0 +1,40 @@
+.venv/
+__pycache__/
+*.pyc
+.playwright-cli/
+frontend/node_modules/
+*.tsbuildinfo
+
+# Local secrets and machine-specific config
+config/settings.local.json
+.env
+.env.*
+!.env.example
+
+# Runtime data and generated media
+data/app.db
+data/jobs/*
+data/projects/*
+data/storyboards/*
+data/assets/source_frames/*
+data/assets/anime_frames/*
+data/assets/api_metadata/*
+data/exports/*
+data/sources/*
+!**/.gitkeep
+
+# Local logs and process files
+work/
+
+# Generated artifacts and screenshots
+outputs/
+
+# Third-party local installs
+tools/ComfyUI/
+comfyui-venv/
+ollama-models/
+
+# Python and test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

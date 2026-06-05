@@ -1,0 +1,582 @@
+from __future__ import annotations
+
+import json
+import mimetypes
+import os
+import subprocess
+import sys
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+from urllib.parse import unquote
+
+from anime_workflow.launcher.config import LauncherConfigStore
+from anime_workflow.launcher.services import ComfyUIService, PROJECT_ROOT, environment_status, tail_file
+from anime_workflow.jobs.runner import JobRunner
+from anime_workflow.jobs.store import JobStore
+from anime_workflow.projects.models import slug as project_slug
+from anime_workflow.projects.store import ProjectStore
+from anime_workflow.services.anime_api_adapter import MockAnimeProvider, OpenAIImageProvider
+from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images
+from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard, storyboard_path
+
+
+CONFIG_PATH = PROJECT_ROOT / "config/settings.local.json"
+STATIC_DIR = PROJECT_ROOT / "web/launcher"
+WINDOWS_CJK_FONT = Path("/mnt/c/Windows/Fonts/msyh.ttc")
+STORYBOARD_DIR = PROJECT_ROOT / "data/storyboards"
+PROJECTS_DIR = PROJECT_ROOT / "data/projects"
+JOBS_DIR = PROJECT_ROOT / "data/jobs"
+SOURCE_FRAME_DIR = PROJECT_ROOT / "data/assets/source_frames"
+ANIME_FRAME_DIR = PROJECT_ROOT / "data/assets/anime_frames"
+API_METADATA_DIR = PROJECT_ROOT / "data/assets/api_metadata"
+
+
+class LauncherRequestHandler(BaseHTTPRequestHandler):
+    server_version = "AIAnimeLauncher/0.1"
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
+            self._serve_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
+            return
+        if parsed.path == "/fonts/msyh.ttc":
+            self._serve_file(WINDOWS_CJK_FONT, "font/ttf")
+            return
+        if parsed.path == "/api/config":
+            self._json({"config": self.config_store.load_public()})
+            return
+        if parsed.path == "/api/status":
+            config = self.config_store.load()
+            self._json({"status": environment_status(config), "config": self.config_store.load_public()})
+            return
+        if parsed.path == "/api/logs":
+            query = parse_qs(parsed.query)
+            service = query.get("service", ["launcher"])[0]
+            if service == "comfyui":
+                log_path = PROJECT_ROOT / "work/comfyui.log"
+            else:
+                log_path = PROJECT_ROOT / "work/launcher.log"
+            self._json({"log": tail_file(log_path, 160)})
+            return
+        if parsed.path == "/api/episode":
+            query = parse_qs(parsed.query)
+            project_id = query.get("project_id", [""])[0]
+            episode_id = query.get("episode_id", [""])[0]
+            path = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
+            if not path.exists():
+                self._json({"ok": False, "error": "storyboard not found", "path": str(path)}, HTTPStatus.NOT_FOUND)
+                return
+            self._json({"ok": True, "storyboard": load_storyboard(path), "storyboard_path": str(path)})
+            return
+        if parsed.path == "/api/outputs":
+            exports_dir = Path(getattr(self.server, "exports_dir", configured_output_dir(self.config_store.load())))
+            self._json({"ok": True, "outputs": self.project_store.list_outputs(exports_dir)})
+            return
+        if parsed.path == "/api/jobs":
+            self._handle_job_list()
+            return
+        if parsed.path == "/api/projects":
+            self._handle_project_list()
+            return
+        if parsed.path.startswith("/api/projects/"):
+            self._handle_project_get(parsed.path)
+            return
+        static_path = static_file_for_request(parsed.path, STATIC_DIR)
+        if static_path:
+            self._serve_file(static_path, content_type_for(static_path))
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/config":
+            body = self._read_json()
+            self.config_store.save(body)
+            self._json({"config": self.config_store.load_public()})
+            return
+        if parsed.path == "/api/comfyui/start":
+            self._json(ComfyUIService().start())
+            return
+        if parsed.path == "/api/comfyui/stop":
+            self._json(ComfyUIService().stop())
+            return
+        if parsed.path == "/api/openai/test":
+            self._json(self._run_script("scripts/run_openai_image_workflow.py"))
+            return
+        if parsed.path == "/api/mock/test":
+            self._json(self._run_script("scripts/run_mock_anime_workflow.py"))
+            return
+        if parsed.path == "/api/projects":
+            self._handle_project_save()
+            return
+        if parsed.path == "/api/jobs":
+            self._handle_job_create()
+            return
+        if parsed.path.startswith("/api/jobs/"):
+            self._handle_job_post(parsed.path)
+            return
+        if parsed.path.startswith("/api/projects/"):
+            self._handle_project_post(parsed.path)
+            return
+        if parsed.path == "/api/episode/storyboard":
+            self._handle_episode_storyboard()
+            return
+        if parsed.path == "/api/episode/images":
+            self._handle_episode_images()
+            return
+        if parsed.path == "/api/episode/video":
+            self._handle_episode_video()
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    @property
+    def config_store(self) -> LauncherConfigStore:
+        return LauncherConfigStore(CONFIG_PATH)
+
+    @property
+    def project_store(self) -> ProjectStore:
+        return ProjectStore(Path(getattr(self.server, "projects_dir", PROJECTS_DIR)))
+
+    @property
+    def job_store(self) -> JobStore:
+        store = getattr(self.server, "job_store", None)
+        if store is None:
+            store = JobStore(Path(getattr(self.server, "jobs_dir", JOBS_DIR)))
+            self.server.job_store = store
+        return store
+
+    @property
+    def job_runner(self) -> JobRunner:
+        runner = getattr(self.server, "job_runner", None)
+        if runner is None:
+            runner = JobRunner(
+                job_store=self.job_store,
+                project_store=self.project_store,
+                storyboard_dir=STORYBOARD_DIR,
+                source_dir=SOURCE_FRAME_DIR,
+                image_dir=ANIME_FRAME_DIR,
+                metadata_dir=API_METADATA_DIR,
+                output_dir=Path(getattr(self.server, "exports_dir", configured_output_dir(self.config_store.load()))),
+                config_loader=self.config_store.load,
+            )
+            self.server.job_runner = runner
+        return runner
+
+    def _run_script(self, script: str) -> dict[str, Any]:
+        config = self.config_store.load()
+        env = os.environ.copy()
+        if config.get("openai_api_key"):
+            env["OPENAI_API_KEY"] = config["openai_api_key"]
+        env["OPENAI_BASE_URL"] = config.get("openai_base_url", "https://aigate.zhixingjidian.cn")
+        env["OPENAI_IMAGE_MODEL"] = config.get("openai_image_model", "gpt-image-2")
+        command = [sys.executable, str(PROJECT_ROOT / script)]
+        result = subprocess.run(
+            command,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=180,
+        )
+        log_path = PROJECT_ROOT / "work/launcher.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"$ {' '.join(command)}\n")
+            log.write(result.stdout)
+            log.write(result.stderr)
+            log.write(f"\nexit={result.returncode}\n")
+        return {
+            "ok": result.returncode == 0,
+            "exit_code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+
+    def _handle_episode_storyboard(self) -> None:
+        try:
+            body = self._read_json()
+            storyboard = generate_storyboard(body)
+            path = save_storyboard(storyboard, STORYBOARD_DIR)
+            self._json({"ok": True, "storyboard": storyboard, "storyboard_path": str(path)})
+        except Exception as exc:
+            self._json_error(exc)
+
+    def _handle_episode_images(self) -> None:
+        try:
+            body = self._read_json()
+            path = storyboard_path(STORYBOARD_DIR, body.get("project_id", ""), body.get("episode_id", ""))
+            storyboard = load_storyboard(path)
+            config = self.config_store.load()
+            provider_name = str(body.get("provider") or "mock").lower()
+            if provider_name == "openai":
+                if body.get("confirm_openai") is not True:
+                    self._json({"ok": False, "error": "openai provider requires confirmation"}, HTTPStatus.BAD_REQUEST)
+                    return
+                api_key = config.get("openai_api_key", "")
+                if not api_key:
+                    self._json({"ok": False, "error": "OpenAI API Key is not configured"}, HTTPStatus.BAD_REQUEST)
+                    return
+                provider = OpenAIImageProvider(
+                    api_key=api_key,
+                    model=config.get("openai_image_model", "gpt-image-2"),
+                    endpoint=config.get("openai_base_url", "https://aigate.zhixingjidian.cn"),
+                )
+            else:
+                provider = MockAnimeProvider()
+
+            updated = generate_episode_images(
+                storyboard=storyboard,
+                provider=provider,
+                source_dir=PROJECT_ROOT / "data/assets/source_frames",
+                output_dir=PROJECT_ROOT / "data/assets/anime_frames",
+                metadata_dir=PROJECT_ROOT / "data/assets/api_metadata",
+            )
+            saved = save_storyboard(updated, STORYBOARD_DIR)
+            self._json({"ok": True, "storyboard": updated, "storyboard_path": str(saved), "provider": provider.name})
+        except Exception as exc:
+            self._json_error(exc)
+
+    def _handle_episode_video(self) -> None:
+        try:
+            body = self._read_json()
+            path = storyboard_path(STORYBOARD_DIR, body.get("project_id", ""), body.get("episode_id", ""))
+            storyboard = load_storyboard(path)
+            video = export_episode_video(storyboard, configured_output_dir(self.config_store.load()))
+            storyboard["video_path"] = str(video)
+            saved = save_storyboard(storyboard, STORYBOARD_DIR)
+            self._json({"ok": True, "video_path": str(video), "storyboard": storyboard, "storyboard_path": str(saved)})
+        except Exception as exc:
+            self._json_error(exc)
+
+    def _handle_project_list(self) -> None:
+        try:
+            self._json({"ok": True, "projects": self.project_store.list_projects()})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_job_list(self) -> None:
+        try:
+            if self.job_store.has_queued_jobs():
+                self.job_runner.start()
+            self._json({"ok": True, "jobs": self.job_store.list_jobs()})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+
+    def _handle_job_create(self) -> None:
+        try:
+            job = self.job_store.create_job(self._read_json())
+            self.job_runner.start()
+            self._json({"ok": True, "job": job})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_job_post(self, path: str) -> None:
+        try:
+            body = self._read_json()
+            job_id, action = job_action_from_api_path(path)
+            if action == "cancel":
+                self._json({"ok": True, "job": self.job_store.request_cancel(job_id)})
+                return
+            if action == "retry":
+                job = self.job_store.retry_job(job_id, confirm_openai=body.get("confirm_openai") is True)
+                self.job_runner.start()
+                self._json({"ok": True, "job": job})
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_project_get(self, path: str) -> None:
+        try:
+            project_id = project_id_from_api_path(path)
+            suffix = project_api_suffix(path)
+            if suffix == "":
+                self._json({"ok": True, "project": self.project_store.get_project(project_id)})
+                return
+            if suffix == "characters":
+                self._json({"ok": True, "characters": self.project_store.list_characters(project_id)})
+                return
+            if suffix == "styles":
+                self._json({"ok": True, "styles": self.project_store.list_styles(project_id)})
+                return
+            if suffix == "episodes":
+                self._json({"ok": True, "episodes": self.project_store.list_episodes(project_id)})
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_project_save(self) -> None:
+        try:
+            self._json({"ok": True, "project": self.project_store.save_project(self._read_json())})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_project_post(self, path: str) -> None:
+        project_id = ""
+        episode_id = ""
+        try:
+            body = self._read_json()
+            project_id = project_id_from_api_path(path)
+            suffix = project_api_suffix(path)
+            production_route = project_episode_action_from_api_path(path)
+            if production_route:
+                _, episode_id, action = production_route
+                if action == "storyboard":
+                    self._handle_project_episode_storyboard(project_id, episode_id)
+                    return
+                if action == "images":
+                    self._handle_project_episode_images(project_id, episode_id, body)
+                    return
+                if action == "video":
+                    self._handle_project_episode_video(project_id, episode_id)
+                    return
+            if suffix == "":
+                payload = dict(body)
+                payload["project_id"] = project_id
+                self._json({"ok": True, "project": self.project_store.save_project(payload)})
+                return
+            if suffix == "characters":
+                self._json({"ok": True, "character": self.project_store.save_character(project_id, body)})
+                return
+            if suffix == "styles":
+                self._json({"ok": True, "style": self.project_store.save_style(project_id, body)})
+                return
+            if suffix == "episodes/batch":
+                self._json({"ok": True, "episodes": self.project_store.create_episode_batch(project_id, body)})
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._mark_episode_failed(project_id, episode_id, exc)
+            self._json_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_project_episode_storyboard(self, project_id: str, episode_id: str) -> None:
+        values = self.project_store.build_storyboard_values(project_id, episode_id)
+        storyboard = generate_storyboard(values)
+        path = save_storyboard(storyboard, STORYBOARD_DIR)
+        episode = self.project_store.update_episode(
+            project_id,
+            episode_id,
+            {"status": "storyboarded", "storyboard_path": str(path), "error": ""},
+        )
+        self._json({"ok": True, "storyboard": storyboard, "episode": episode, "storyboard_path": str(path)})
+
+    def _handle_project_episode_images(self, project_id: str, episode_id: str, body: dict[str, Any]) -> None:
+        storyboard_file = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
+        storyboard = load_storyboard(storyboard_file)
+        config = self.config_store.load()
+        provider_name = str(body.get("provider") or "mock").lower()
+        if provider_name == "openai":
+            if body.get("confirm_openai") is not True:
+                self._json({"ok": False, "error": "openai provider requires confirmation"}, HTTPStatus.BAD_REQUEST)
+                return
+            api_key = config.get("openai_api_key", "")
+            if not api_key:
+                self._json({"ok": False, "error": "OpenAI API Key is not configured"}, HTTPStatus.BAD_REQUEST)
+                return
+            provider = OpenAIImageProvider(
+                api_key=api_key,
+                model=config.get("openai_image_model", "gpt-image-2"),
+                endpoint=config.get("openai_base_url", "https://aigate.zhixingjidian.cn"),
+            )
+        else:
+            provider = MockAnimeProvider()
+
+        updated = generate_episode_images(
+            storyboard=storyboard,
+            provider=provider,
+            source_dir=PROJECT_ROOT / "data/assets/source_frames",
+            output_dir=PROJECT_ROOT / "data/assets/anime_frames",
+            metadata_dir=PROJECT_ROOT / "data/assets/api_metadata",
+        )
+        saved = save_storyboard(updated, STORYBOARD_DIR)
+        episode = self.project_store.update_episode(
+            project_id,
+            episode_id,
+            {"status": "imaged", "storyboard_path": str(saved), "error": ""},
+        )
+        self._json({"ok": True, "storyboard": updated, "episode": episode, "storyboard_path": str(saved), "provider": provider.name})
+
+    def _handle_project_episode_video(self, project_id: str, episode_id: str) -> None:
+        storyboard = load_storyboard(storyboard_path(STORYBOARD_DIR, project_id, episode_id))
+        video = export_episode_video(storyboard, configured_output_dir(self.config_store.load()))
+        storyboard["video_path"] = str(video)
+        save_storyboard(storyboard, STORYBOARD_DIR)
+        episode = self.project_store.update_episode(
+            project_id,
+            episode_id,
+            {"status": "exported", "video_path": str(video), "error": ""},
+        )
+        self._json({"ok": True, "video_path": str(video), "storyboard": storyboard, "episode": episode})
+
+    def _mark_episode_failed(self, project_id: str, episode_id: str, exc: Exception) -> None:
+        if not project_id or not episode_id:
+            return
+        try:
+            self.project_store.update_episode(project_id, episode_id, {"status": "failed", "error": str(exc)})
+        except Exception:
+            return
+
+    def _read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length == 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def _json(self, data: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _json_error(self, exc: Exception, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> None:
+        self._json({"ok": False, "error": str(exc)}, status)
+
+    def _serve_file(self, path: Path, content_type: str) -> None:
+        if not path.exists():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        payload = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        log_path = PROJECT_ROOT / "work/launcher.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(format % args + "\n")
+
+
+def run(host: str = "127.0.0.1", port: int = 7860) -> None:
+    server = ThreadingHTTPServer((host, port), LauncherRequestHandler)
+    server.job_store = JobStore(JOBS_DIR)
+    server.job_store.recover_interrupted_jobs()
+    server.job_runner = JobRunner(
+        job_store=server.job_store,
+        project_store=ProjectStore(PROJECTS_DIR),
+        storyboard_dir=STORYBOARD_DIR,
+        source_dir=SOURCE_FRAME_DIR,
+        image_dir=ANIME_FRAME_DIR,
+        metadata_dir=API_METADATA_DIR,
+        output_dir=configured_output_dir(LauncherConfigStore(CONFIG_PATH).load()),
+        config_loader=LauncherConfigStore(CONFIG_PATH).load,
+    )
+    if server.job_store.has_queued_jobs():
+        server.job_runner.start()
+    print(f"AI Anime Launcher running at http://{host}:{port}")
+    server.serve_forever()
+
+
+def static_file_for_request(path: str, static_dir: Path = STATIC_DIR) -> Path | None:
+    if path.startswith("/api/") or path.startswith("/fonts/"):
+        return None
+    relative = unquote(path).lstrip("/")
+    if not relative:
+        relative = "index.html"
+    candidate = (static_dir / relative).resolve()
+    root = static_dir.resolve()
+    if not candidate.is_relative_to(root):
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def project_api_parts(path: str) -> list[str]:
+    return [unquote(part) for part in path.split("/") if part]
+
+
+def project_id_from_api_path(path: str) -> str:
+    parts = project_api_parts(path)
+    if len(parts) < 3 or parts[0] != "api" or parts[1] != "projects":
+        raise ValueError("project_id is required")
+    project_id = parts[2].strip()
+    if not project_id:
+        raise ValueError("project_id is required")
+    if project_id != project_slug(project_id, ""):
+        raise ValueError("project_id is invalid")
+    return project_id
+
+
+def project_api_suffix(path: str) -> str:
+    parts = project_api_parts(path)
+    if len(parts) <= 3:
+        return ""
+    return "/".join(part.strip() for part in parts[3:])
+
+
+def project_episode_action_from_api_path(path: str) -> tuple[str, str, str] | None:
+    raw_parts = path.split("/")
+    if raw_parts and raw_parts[0] == "":
+        raw_parts = raw_parts[1:]
+    parts = [unquote(part) for part in raw_parts]
+    if len(parts) != 6:
+        return None
+    if parts[0] != "api" or parts[1] != "projects" or parts[3] != "episodes":
+        return None
+    if any(not part.strip() for part in parts):
+        return None
+    episode_id = parts[4].strip()
+    if episode_id != project_slug(episode_id, ""):
+        raise ValueError("episode_id is invalid")
+    action = parts[5].strip()
+    if action not in {"storyboard", "images", "video"}:
+        return None
+    return parts[2].strip(), episode_id, action
+
+
+def job_action_from_api_path(path: str) -> tuple[str, str]:
+    parts = project_api_parts(path)
+    if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs":
+        raise ValueError("job path is invalid")
+    job_id = parts[2].strip()
+    action = parts[3].strip()
+    if not job_id:
+        raise ValueError("job_id is required")
+    if action not in {"cancel", "retry"}:
+        raise ValueError("job action is invalid")
+    return job_id, action
+
+
+def content_type_for(path: Path) -> str:
+    if path.suffix == ".js":
+        return "application/javascript; charset=utf-8"
+    if path.suffix == ".css":
+        return "text/css; charset=utf-8"
+    if path.suffix == ".html":
+        return "text/html; charset=utf-8"
+    guessed = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return guessed
+
+
+def configured_output_dir(config: dict[str, Any]) -> Path:
+    path = Path(str(config.get("output_dir") or "data/exports"))
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+if __name__ == "__main__":
+    run()

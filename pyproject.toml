@@ -1,0 +1,10 @@
+[project]
+name = "ai-anime-workflow"
+version = "0.1.0"
+description = "Local-first AI anime short drama workflow for Douyin and Bilibili."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

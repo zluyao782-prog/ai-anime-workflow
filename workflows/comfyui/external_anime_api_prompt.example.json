@@ -1,0 +1,16 @@
+{
+  "1": {
+    "class_type": "ExternalAnimeStylize",
+    "inputs": {
+      "source_image_path": "data/assets/source_frames/demo.png",
+      "style_preset": "clean_anime_drama",
+      "character_reference_path": "",
+      "prompt": "young detective, moonlit village, clean anime drama style",
+      "output_path": "data/assets/anime_frames/demo-anime.png",
+      "api_endpoint": "https://aigate.zhixingjidian.cn/v1/images/edits",
+      "api_key": "",
+      "provider_name": "openai",
+      "model_version": "gpt-image-2"
+    }
+  }
+}

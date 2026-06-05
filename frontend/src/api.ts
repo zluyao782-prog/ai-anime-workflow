@@ -1,0 +1,294 @@
+export type PublicConfig = {
+  openai_api_key: string;
+  openai_api_key_configured: boolean;
+  openai_base_url: string;
+  openai_image_model: string;
+  ollama_text_model: string;
+  comfyui_base_url: string;
+  output_dir: string;
+};
+
+export type DiskInfo = {
+  total_gb: number;
+  used_gb: number;
+  free_gb: number;
+};
+
+export type LauncherStatus = {
+  python: { ok: boolean };
+  ffmpeg: { ok: boolean; path: string };
+  ollama: { ok: boolean; detail: string };
+  comfyui: {
+    process_running: boolean;
+    pid: number | null;
+    api_running: boolean;
+    api_detail: string;
+    log_tail: string;
+  };
+  openai: { configured: boolean };
+  paths: Record<string, string>;
+  disk: Record<string, DiskInfo>;
+};
+
+export type StatusResponse = {
+  status: LauncherStatus;
+  config: PublicConfig;
+};
+
+export type ScriptResult = {
+  ok: boolean;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+};
+
+export type EpisodeShot = {
+  shot_id: string;
+  duration: number;
+  scene: string;
+  dialogue: string;
+  image_prompt: string;
+  camera: string;
+  emotion: string;
+  source_image: string;
+  anime_image: string;
+  metadata_path?: string;
+  cache_hit?: boolean;
+};
+
+export type Storyboard = {
+  project_id: string;
+  episode_id: string;
+  title: string;
+  genre: string;
+  premise: string;
+  protagonist: string;
+  style_preset: string;
+  platform: string;
+  duration_seconds: number;
+  shot_count: number;
+  shots: EpisodeShot[];
+  video_path?: string;
+};
+
+export type EpisodeStoryboardRequest = {
+  project_id: string;
+  episode_id: string;
+  title?: string;
+  genre: string;
+  premise: string;
+  protagonist: string;
+  style_preset: string;
+  platform: string;
+  duration_seconds: number;
+  shot_count: number;
+};
+
+export type EpisodeResponse = {
+  ok: boolean;
+  storyboard: Storyboard;
+  storyboard_path: string;
+  provider?: string;
+  video_path?: string;
+};
+
+export type Project = {
+  project_id: string;
+  name: string;
+  genre: string;
+  platform: string;
+  premise: string;
+  default_duration_seconds: number;
+  default_shot_count: number;
+  default_style_id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Character = {
+  character_id: string;
+  project_id: string;
+  name: string;
+  role: string;
+  appearance: string;
+  personality: string;
+  costume: string;
+  reference_image: string;
+  prompt_fragment: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StyleTemplate = {
+  style_id: string;
+  project_id: string;
+  name: string;
+  base_prompt: string;
+  negative_prompt: string;
+  aspect_ratio: string;
+  palette: string;
+  camera_style: string;
+  provider: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectEpisode = {
+  episode_id: string;
+  project_id: string;
+  episode_no: number;
+  title: string;
+  premise: string;
+  duration_seconds: number;
+  shot_count: number;
+  status: "draft" | "storyboarded" | "imaged" | "exported" | "failed";
+  storyboard_path: string;
+  video_path: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OutputItem = {
+  filename: string;
+  video_path: string;
+  size_bytes: number;
+  updated_at: number;
+};
+
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export type JobProvider = "mock" | "openai";
+
+export type JobStep = "storyboard" | "images" | "video";
+
+export type Job = {
+  job_id: string;
+  project_id: string;
+  episode_ids: string[];
+  steps: JobStep[];
+  provider: JobProvider;
+  status: JobStatus;
+  progress: number;
+  completed_steps: number;
+  total_steps: number;
+  current_episode_id: string;
+  current_step: string;
+  error: string;
+  cancel_requested: boolean;
+  created_at: string;
+  updated_at: string;
+  started_at: string;
+  finished_at: string;
+};
+
+export type CreateJobRequest = {
+  project_id: string;
+  episode_ids: string[];
+  steps: Array<JobStep | "full">;
+  provider: JobProvider;
+  confirm_openai?: boolean;
+};
+
+export type ProjectEpisodeProductionResponse = {
+  ok: boolean;
+  episode: ProjectEpisode;
+  storyboard?: Storyboard;
+  storyboard_path?: string;
+  provider?: string;
+  video_path?: string;
+};
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const data = (await response.json()) as { error?: string };
+      if (data.error) detail = data.error;
+    } catch {
+      // Keep the HTTP status text when the response is not JSON.
+    }
+    throw new Error(detail);
+  }
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  status: () => request<StatusResponse>("/api/status"),
+  logs: (service: "comfyui" | "launcher") => request<{ log: string }>(`/api/logs?service=${service}`),
+  saveConfig: (config: Partial<PublicConfig>) =>
+    request<{ config: PublicConfig }>("/api/config", { method: "POST", body: JSON.stringify(config) }),
+  startComfy: () => request<{ status: string; pid?: number }>("/api/comfyui/start", { method: "POST", body: "{}" }),
+  stopComfy: () => request<{ status: string; pid?: number }>("/api/comfyui/stop", { method: "POST", body: "{}" }),
+  runOpenAITest: () => request<ScriptResult>("/api/openai/test", { method: "POST", body: "{}" }),
+  runMockTest: () => request<ScriptResult>("/api/mock/test", { method: "POST", body: "{}" }),
+  getEpisode: (projectId: string, episodeId: string) =>
+    request<EpisodeResponse>(`/api/episode?project_id=${encodeURIComponent(projectId)}&episode_id=${encodeURIComponent(episodeId)}`),
+  createStoryboard: (payload: EpisodeStoryboardRequest) =>
+    request<EpisodeResponse>("/api/episode/storyboard", { method: "POST", body: JSON.stringify(payload) }),
+  generateEpisodeImages: (projectId: string, episodeId: string, provider: "mock" | "openai", confirmOpenai = false) =>
+    request<EpisodeResponse>("/api/episode/images", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, provider, confirm_openai: confirmOpenai }),
+    }),
+  exportEpisodeVideo: (projectId: string, episodeId: string) =>
+    request<EpisodeResponse>("/api/episode/video", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId }),
+    }),
+  listProjects: () => request<{ ok: boolean; projects: Project[] }>("/api/projects"),
+  saveProject: (project: Partial<Project>) =>
+    request<{ ok: boolean; project: Project }>("/api/projects", { method: "POST", body: JSON.stringify(project) }),
+  listCharacters: (projectId: string) =>
+    request<{ ok: boolean; characters: Character[] }>(`/api/projects/${encodeURIComponent(projectId)}/characters`),
+  saveCharacter: (projectId: string, character: Partial<Character>) =>
+    request<{ ok: boolean; character: Character }>(`/api/projects/${encodeURIComponent(projectId)}/characters`, {
+      method: "POST",
+      body: JSON.stringify(character),
+    }),
+  listStyles: (projectId: string) =>
+    request<{ ok: boolean; styles: StyleTemplate[] }>(`/api/projects/${encodeURIComponent(projectId)}/styles`),
+  saveStyle: (projectId: string, style: Partial<StyleTemplate>) =>
+    request<{ ok: boolean; style: StyleTemplate }>(`/api/projects/${encodeURIComponent(projectId)}/styles`, {
+      method: "POST",
+      body: JSON.stringify(style),
+    }),
+  listProjectEpisodes: (projectId: string) =>
+    request<{ ok: boolean; episodes: ProjectEpisode[] }>(`/api/projects/${encodeURIComponent(projectId)}/episodes`),
+  createEpisodeBatch: (projectId: string, count: number, direction: string) =>
+    request<{ ok: boolean; episodes: ProjectEpisode[] }>(`/api/projects/${encodeURIComponent(projectId)}/episodes/batch`, {
+      method: "POST",
+      body: JSON.stringify({ count, direction }),
+    }),
+  listOutputs: () => request<{ ok: boolean; outputs: OutputItem[] }>("/api/outputs"),
+  listJobs: () => request<{ ok: boolean; jobs: Job[] }>("/api/jobs"),
+  createJob: (payload: CreateJobRequest) =>
+    request<{ ok: boolean; job: Job }>("/api/jobs", { method: "POST", body: JSON.stringify(payload) }),
+  cancelJob: (jobId: string) =>
+    request<{ ok: boolean; job: Job }>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", body: "{}" }),
+  retryJob: (jobId: string, confirmOpenai = false) =>
+    request<{ ok: boolean; job: Job }>(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ confirm_openai: confirmOpenai }),
+    }),
+  createProjectStoryboard: (projectId: string, episodeId: string) =>
+    request<ProjectEpisodeProductionResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/storyboard`,
+      { method: "POST", body: "{}" },
+    ),
+  generateProjectEpisodeImages: (projectId: string, episodeId: string, provider: "mock" | "openai", confirmOpenai = false) =>
+    request<ProjectEpisodeProductionResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/images`,
+      { method: "POST", body: JSON.stringify({ provider, confirm_openai: confirmOpenai }) },
+    ),
+  exportProjectEpisodeVideo: (projectId: string, episodeId: string) =>
+    request<ProjectEpisodeProductionResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/video`,
+      { method: "POST", body: "{}" },
+    ),
+};
