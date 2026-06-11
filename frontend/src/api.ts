@@ -210,10 +210,17 @@ export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancell
 
 export type JobProvider = "mock" | "openai" | "comfyui";
 
+export type WorkflowRoute = "local_mock_image" | "direct_openai_image" | "comfyui_openai_image";
+
 export type WorkflowTemplate = {
   template_id: string;
   name: string;
   provider: JobProvider;
+  external_provider: "mock" | "openai";
+  route: WorkflowRoute;
+  route_summary: string;
+  consumes_api: boolean;
+  requires_openai_confirmation: boolean;
   description: string;
 };
 

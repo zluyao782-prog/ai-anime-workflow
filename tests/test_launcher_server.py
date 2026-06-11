@@ -217,6 +217,24 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server(server, thread)
 
+    def test_workflow_templates_include_cost_and_route_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                status, response = self.request_json(server, "/api/workflow-templates")
+                self.assertEqual(status, HTTPStatus.OK)
+                templates = {template["template_id"]: template for template in response["templates"]}
+
+                comfyui = templates["comfyui_external_anime"]
+                self.assertEqual(comfyui["provider"], "comfyui")
+                self.assertEqual(comfyui["external_provider"], "openai")
+                self.assertTrue(comfyui["consumes_api"])
+                self.assertTrue(comfyui["requires_openai_confirmation"])
+                self.assertEqual(comfyui["route"], "comfyui_openai_image")
+                self.assertIn("ComfyUI", comfyui["route_summary"])
+            finally:
+                self.stop_server(server, thread)
+
     def test_production_readiness_api_reports_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_config_path = launcher_server.CONFIG_PATH
