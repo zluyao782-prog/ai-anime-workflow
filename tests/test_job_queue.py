@@ -162,6 +162,21 @@ class JobQueueStoreTest(unittest.TestCase):
             self.assertEqual(job["steps"], ["images"])
             self.assertEqual(job["workflow_template"], "comfyui_external_anime")
 
+    def test_create_job_rejects_workflow_template_provider_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(Path(tmp) / "jobs")
+
+            with self.assertRaisesRegex(ValueError, "workflow_template provider does not match provider"):
+                store.create_job(
+                    {
+                        "project_id": "demo",
+                        "episode_ids": ["episode_001"],
+                        "steps": ["images"],
+                        "provider": "mock",
+                        "workflow_template": "comfyui_external_anime",
+                    }
+                )
+
     def test_create_job_preserves_workflow_template_and_openai_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JobStore(Path(tmp) / "jobs")

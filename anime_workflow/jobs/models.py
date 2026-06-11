@@ -125,7 +125,9 @@ def job_from(values: dict[str, Any], existing: dict[str, Any] | None = None) -> 
     workflow_template = str(
         values.get("workflow_template") or existing.get("workflow_template") or DEFAULT_WORKFLOW_TEMPLATES[provider]
     ).strip()
-    workflow_template_by_id(workflow_template)
+    template = workflow_template_by_id(workflow_template)
+    if template["provider"] != provider:
+        raise ValueError("workflow_template provider does not match provider")
 
     steps = normalize_steps(values.get("steps", existing.get("steps")))
     episode_ids = normalize_episode_ids(values.get("episode_ids", existing.get("episode_ids")))

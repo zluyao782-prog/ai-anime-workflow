@@ -406,6 +406,28 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server(server, thread)
 
+    def test_jobs_api_rejects_workflow_template_provider_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server, thread = self.with_server(Path(tmp) / "projects", jobs_dir=Path(tmp) / "jobs", job_runner=NoopRunner())
+            try:
+                status, payload = self.request_json(
+                    server,
+                    "/api/jobs",
+                    {
+                        "project_id": "demo",
+                        "episode_ids": ["episode_001"],
+                        "steps": ["images"],
+                        "provider": "mock",
+                        "workflow_template": "comfyui_external_anime",
+                    },
+                )
+
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error"], "workflow_template provider does not match provider")
+            finally:
+                self.stop_server(server, thread)
+
     def test_jobs_api_requires_openai_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             server, thread = self.with_server(Path(tmp) / "projects", jobs_dir=Path(tmp) / "jobs", job_runner=NoopRunner())
