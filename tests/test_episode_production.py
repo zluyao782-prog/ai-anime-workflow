@@ -121,6 +121,9 @@ class EpisodeProductionTest(unittest.TestCase):
             metadata = json.loads(Path(updated["shots"][1]["metadata_path"]).read_text(encoding="utf-8"))
             self.assertIn("rainy narrow alley", metadata["prompt"])
             self.assertEqual(metadata["reference_images"], [str(reference_image)])
+            self.assertEqual(metadata["workflow_template"], "comfyui_external_anime")
+            self.assertEqual(metadata["reference_bindings"], ["rain_alley"])
+            self.assertEqual(updated["shots"][1]["rerun_history"][0]["workflow_template"], "comfyui_external_anime")
 
     def test_generate_shot_image_rejects_missing_shot(self):
         storyboard = generate_storyboard(

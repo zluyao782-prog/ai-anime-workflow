@@ -25,6 +25,8 @@ class AnimeApiRequest:
     prompt: str = ""
     character_reference: Path | None = None
     reference_images: tuple[Path, ...] = ()
+    workflow_template: str = "mock_image"
+    reference_bindings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,6 +339,8 @@ class AnimeApiAdapter:
             "reference_image_hashes": [self._sha256(path) for path in request.reference_images if Path(path).exists()],
             "style_preset": request.style_preset,
             "prompt": request.prompt,
+            "workflow_template": request.workflow_template,
+            "reference_bindings": list(request.reference_bindings),
             "provider": self.provider.name,
             "model_version": self.provider.model_version,
         }
@@ -363,11 +367,13 @@ class AnimeApiAdapter:
             "reference_images": [str(path) for path in request.reference_images],
             "style_preset": request.style_preset,
             "prompt": request.prompt,
+            "workflow_template": request.workflow_template,
+            "reference_bindings": list(request.reference_bindings),
             "output_image": str(output_image),
             "cache_key": cache_key,
             "status": status,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "estimated_cost": 0,
+            "estimated_cost": {"amount": 0, "currency": "USD", "source": "not_tracked"},
         }
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 

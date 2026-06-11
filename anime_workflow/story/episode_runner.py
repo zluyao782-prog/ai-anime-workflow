@@ -63,6 +63,8 @@ def _generate_shot_image(
 ) -> None:
     source = Path(source_dir) / storyboard["project_id"] / storyboard["episode_id"] / f"{shot['shot_id']}.png"
     create_source_frame(source, index=index)
+    workflow_template = str(shot.get("workflow_template") or "mock_image")
+    reference_bindings = tuple(str(item) for item in shot.get("reference_bindings", []) if str(item).strip())
     result = adapter.stylize(
         AnimeApiRequest(
             project_id=storyboard["project_id"],
@@ -72,6 +74,8 @@ def _generate_shot_image(
             style_preset=storyboard.get("style_preset", "clean_anime_drama"),
             prompt=prompt_with_references(shot, references),
             reference_images=reference_images_for_shot(shot, references),
+            workflow_template=workflow_template,
+            reference_bindings=reference_bindings,
         )
     )
     shot["source_image"] = str(source)

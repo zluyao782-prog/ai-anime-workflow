@@ -53,6 +53,38 @@ class AnimeApiAdapterTest(unittest.TestCase):
             self.assertEqual(metadata["status"], "succeeded")
             self.assertEqual(metadata["style_preset"], "clean_anime")
 
+    def test_stylize_metadata_records_workflow_template_references_and_cost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.png"
+            source.write_bytes(b"fake-image-bytes")
+
+            adapter = AnimeApiAdapter(
+                provider=MockAnimeProvider(),
+                output_dir=root / "anime_frames",
+                metadata_dir=root / "api_metadata",
+            )
+            request = AnimeApiRequest(
+                project_id="p01",
+                episode_id="e01",
+                shot_id="s01",
+                source_image=source,
+                style_preset="clean_anime",
+                prompt="rain alley",
+                workflow_template="comfyui_external_anime",
+                reference_bindings=("rain_alley",),
+            )
+
+            result = adapter.stylize(request)
+
+            metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["workflow_template"], "comfyui_external_anime")
+            self.assertEqual(metadata["reference_bindings"], ["rain_alley"])
+            self.assertEqual(
+                metadata["estimated_cost"],
+                {"amount": 0, "currency": "USD", "source": "not_tracked"},
+            )
+
     def test_missing_source_image_fails_before_provider_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
