@@ -217,6 +217,25 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server(server, thread)
 
+    def test_production_readiness_api_reports_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/config", {"openai_api_key": "sk-test"})
+
+                readiness = {"ok": True, "checks": {"openai": {"ok": True}}}
+                with mock.patch("anime_workflow.launcher.server.production_readiness", return_value=readiness):
+                    status, payload = self.request_json(server, "/api/production/readiness")
+
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertTrue(payload["ok"])
+                self.assertTrue(payload["readiness"]["ok"])
+            finally:
+                self.stop_server(server, thread)
+                launcher_server.CONFIG_PATH = previous_config_path
+
     def test_project_api_returns_404_for_missing_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             server, thread = self.with_server(Path(tmp) / "projects")

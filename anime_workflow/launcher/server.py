@@ -23,6 +23,7 @@ from anime_workflow.jobs.store import JobStore
 from anime_workflow.projects.models import clamp_int, slug as project_slug
 from anime_workflow.projects.store import ProjectStore
 from anime_workflow.services.anime_api_adapter import ComfyUIAnimeProvider, MockAnimeProvider, OpenAIImageProvider
+from anime_workflow.services.production_readiness import production_readiness
 from anime_workflow.services.workflow_templates import list_workflow_templates, workflow_template_by_id
 from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images, generate_shot_image
 from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard, storyboard_path
@@ -85,6 +86,9 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/jobs":
             self._handle_job_list()
+            return
+        if parsed.path == "/api/production/readiness":
+            self._json({"ok": True, "readiness": production_readiness(self.config_store.load(), PROJECT_ROOT)})
             return
         if parsed.path == "/api/workflow-templates":
             self._json({"ok": True, "templates": list_workflow_templates()})
