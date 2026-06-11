@@ -744,20 +744,25 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_project_episode_video(self, project_id: str, episode_id: str) -> None:
+        storyboard = load_storyboard(storyboard_path(STORYBOARD_DIR, project_id, episode_id))
         try:
-            storyboard = load_storyboard(storyboard_path(STORYBOARD_DIR, project_id, episode_id))
             video = export_episode_video(storyboard, configured_output_dir(self.config_store.load()))
-            storyboard["video_path"] = str(video)
-            save_storyboard(storyboard, STORYBOARD_DIR)
-            episode = self.project_store.update_episode(
-                project_id,
-                episode_id,
-                {"status": "exported", "video_path": str(video), "error": ""},
-            )
-            self._json({"ok": True, "video_path": str(video), "storyboard": storyboard, "episode": episode})
         except Exception as exc:
-            self.project_store.update_episode(project_id, episode_id, {"status": "failed", "error": str(exc)})
+            try:
+                self.project_store.update_episode(project_id, episode_id, {"status": "failed", "error": str(exc)})
+            except Exception:
+                pass
             self._json_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        storyboard["video_path"] = str(video)
+        save_storyboard(storyboard, STORYBOARD_DIR)
+        episode = self.project_store.update_episode(
+            project_id,
+            episode_id,
+            {"status": "exported", "video_path": str(video), "error": ""},
+        )
+        self._json({"ok": True, "video_path": str(video), "storyboard": storyboard, "episode": episode})
 
     def _mark_episode_failed(self, project_id: str, episode_id: str, exc: Exception) -> None:
         if not project_id or not episode_id:

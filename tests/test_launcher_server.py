@@ -975,6 +975,29 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
 
+    def test_project_episode_video_missing_storyboard_returns_404_without_failing_episode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects", exports_dir=Path(tmp) / "exports")
+            try:
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "Demo", "default_shot_count": 1})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+
+                status, payload = self.request_json(server, "/api/projects/demo/episodes/episode_001/video", {})
+
+                self.assertEqual(status, HTTPStatus.NOT_FOUND)
+                self.assertFalse(payload.get("ok", False))
+
+                status, episodes = self.request_json(server, "/api/projects/demo/episodes")
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(episodes["episodes"][0]["status"], "draft")
+                self.assertEqual(episodes["episodes"][0].get("error", ""), "")
+            finally:
+                self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
+
     def test_project_episode_images_openai_without_key_returns_400(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_storyboard_dir = launcher_server.STORYBOARD_DIR
