@@ -691,7 +691,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
         provider_name = str(body.get("provider") or "mock").lower()
         if provider_name == "comfyui":
             template = workflow_template_by_id(str(body.get("workflow_template") or "comfyui_external_anime"))
-            return self._comfyui_image_provider(config, template)
+            return self._comfyui_image_provider(config, template, confirm_openai=body.get("confirm_openai") is True)
         if provider_name == "openai":
             if body.get("confirm_openai") is not True:
                 raise ValueError("openai provider requires confirmation")
@@ -705,9 +705,16 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             )
         return MockAnimeProvider()
 
-    def _comfyui_image_provider(self, config: dict[str, Any], template: dict[str, Any]) -> ComfyUIAnimeProvider:
+    def _comfyui_image_provider(
+        self,
+        config: dict[str, Any],
+        template: dict[str, Any],
+        confirm_openai: bool = False,
+    ) -> ComfyUIAnimeProvider:
         api_key = str(config.get("openai_api_key") or "")
         external_provider = "openai" if api_key else "mock"
+        if external_provider == "openai" and confirm_openai is not True:
+            raise ValueError("comfyui openai route requires confirmation")
         endpoint = str(config.get("openai_base_url") or "mock")
         if external_provider == "openai" and not endpoint.rstrip("/").endswith("/images/edits"):
             endpoint = f"{endpoint.rstrip('/')}/v1/images/edits"

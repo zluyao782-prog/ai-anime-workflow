@@ -13,6 +13,7 @@ from urllib import error, request
 import anime_workflow.launcher.server as launcher_server
 from anime_workflow.launcher.server import LauncherRequestHandler, project_id_from_api_path, static_file_for_request
 from anime_workflow.services.workflow_templates import workflow_template_by_id
+from anime_workflow.story.storyboard import generate_storyboard, save_storyboard
 
 
 class NoopRunner:
@@ -697,6 +698,45 @@ class LauncherServerTest(unittest.TestCase):
                 self.assertEqual(payload["provider"], "mock")
                 self.assertEqual(payload["episode"]["status"], "imaged")
                 self.assertEqual(payload["storyboard"]["shots"][0]["anime_image"], str(Path(tmp) / "anime.png"))
+            finally:
+                self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
+
+    def test_comfyui_route_with_openai_key_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/config", {"openai_api_key": "sk-test"})
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "Demo"})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+                storyboard = generate_storyboard(
+                    {
+                        "project_id": "demo",
+                        "episode_id": "episode_001",
+                        "premise": "rain alley clue",
+                        "shot_count": 1,
+                        "duration_seconds": 3,
+                    }
+                )
+                save_storyboard(storyboard, launcher_server.STORYBOARD_DIR)
+
+                status, response = self.request_json(
+                    server,
+                    "/api/storyboard/shot/image",
+                    {
+                        "project_id": "demo",
+                        "episode_id": "episode_001",
+                        "shot_id": "shot_001",
+                        "provider": "comfyui",
+                        "workflow_template": "comfyui_external_anime",
+                    },
+                )
+
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertEqual(response["error"], "comfyui openai route requires confirmation")
             finally:
                 self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
 

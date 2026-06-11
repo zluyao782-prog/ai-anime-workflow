@@ -6,6 +6,7 @@ from unittest import mock
 
 from anime_workflow.jobs.runner import JobRunner
 from anime_workflow.jobs.store import JobStore
+from anime_workflow.story.storyboard import generate_storyboard, save_storyboard
 
 
 class JobQueueStoreTest(unittest.TestCase):
@@ -382,6 +383,52 @@ class JobRunnerTest(unittest.TestCase):
             self.assertEqual(stored["items"][0]["status"], "failed")
             self.assertIn("OpenAI API Key is not configured", stored["items"][0]["error"])
 
+    def test_comfyui_job_with_openai_key_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job_store = JobStore(root / "jobs")
+            project_store = build_project_store(root)
+            storyboard_dir = root / "storyboards"
+            source_dir = root / "source"
+            image_dir = root / "images"
+            metadata_dir = root / "metadata"
+            output_dir = root / "exports"
+            job = job_store.create_job(
+                {
+                    "project_id": "demo",
+                    "episode_ids": ["episode_001"],
+                    "steps": ["images"],
+                    "provider": "comfyui",
+                    "workflow_template": "comfyui_external_anime",
+                }
+            )
+            storyboard = generate_storyboard(
+                {
+                    "project_id": "demo",
+                    "episode_id": "episode_001",
+                    "premise": "rain alley clue",
+                    "shot_count": 1,
+                    "duration_seconds": 3,
+                }
+            )
+            save_storyboard(storyboard, storyboard_dir)
+            runner = JobRunner(
+                job_store=job_store,
+                project_store=project_store,
+                storyboard_dir=storyboard_dir,
+                source_dir=source_dir,
+                image_dir=image_dir,
+                metadata_dir=metadata_dir,
+                output_dir=output_dir,
+                config_loader=lambda: {"openai_api_key": "sk-test"},
+            )
+
+            result = runner.run_next()
+
+            self.assertEqual(result["job_id"], job["job_id"])
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("comfyui openai route requires confirmation", result["error"])
+
     def test_runner_builds_comfyui_provider_from_remote_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -402,7 +449,7 @@ class JobRunnerTest(unittest.TestCase):
                 },
             )
 
-            provider = runner._provider("comfyui")
+            provider = runner._provider("comfyui", confirm_openai=True)
 
             self.assertEqual(provider.name, "comfyui")
             self.assertEqual(provider.base_url, "http://10.0.0.2:8188")

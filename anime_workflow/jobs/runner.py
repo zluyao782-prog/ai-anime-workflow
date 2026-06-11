@@ -131,7 +131,11 @@ class JobRunner:
             return str(path)
 
         if step == "images":
-            provider = self._provider(job["provider"])
+            provider = self._provider(
+                job["provider"],
+                workflow_template=str(job.get("workflow_template") or "comfyui_external_anime"),
+                confirm_openai=job.get("confirm_openai") is True,
+            )
             storyboard_file = storyboard_path(self.storyboard_dir, project_id, episode_id)
             storyboard = load_storyboard(storyboard_file)
             updated = generate_episode_images(
@@ -156,11 +160,18 @@ class JobRunner:
 
         raise ValueError(f"invalid step: {step}")
 
-    def _provider(self, provider_name: str):
+    def _provider(
+        self,
+        provider_name: str,
+        workflow_template: str = "comfyui_external_anime",
+        confirm_openai: bool = False,
+    ):
         if provider_name == "comfyui":
             config = self.config_loader()
             api_key = str(config.get("openai_api_key") or "")
             external_provider = "openai" if api_key else "mock"
+            if external_provider == "openai" and confirm_openai is not True:
+                raise ValueError("comfyui openai route requires confirmation")
             endpoint = str(config.get("openai_base_url") or "mock")
             if external_provider == "openai" and not endpoint.rstrip("/").endswith("/images/edits"):
                 endpoint = f"{endpoint.rstrip('/')}/v1/images/edits"
@@ -170,7 +181,7 @@ class JobRunner:
                 api_key=api_key,
                 provider_name=external_provider,
                 model_version=str(config.get("openai_image_model") or "gpt-image-2"),
-                workflow_template=workflow_template_by_id("comfyui_external_anime"),
+                workflow_template=workflow_template_by_id(workflow_template),
             )
         if provider_name == "openai":
             config = self.config_loader()
