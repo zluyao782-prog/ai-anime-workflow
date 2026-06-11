@@ -333,6 +333,7 @@ class AnimeApiAdapter:
         return AnimeApiResult(output_image=output_image, metadata_path=metadata_path, cache_hit=False)
 
     def _cache_key(self, request: AnimeApiRequest) -> str:
+        reference_bindings = self._reference_bindings(request)
         payload = {
             "source_hash": self._sha256(Path(request.source_image)),
             "character_reference_hash": self._sha256(request.character_reference) if request.character_reference else "",
@@ -340,7 +341,7 @@ class AnimeApiAdapter:
             "style_preset": request.style_preset,
             "prompt": request.prompt,
             "workflow_template": request.workflow_template,
-            "reference_bindings": list(request.reference_bindings),
+            "reference_bindings": reference_bindings,
             "provider": self.provider.name,
             "model_version": self.provider.model_version,
         }
@@ -355,6 +356,7 @@ class AnimeApiAdapter:
         cache_key: str,
         status: str,
     ) -> None:
+        reference_bindings = self._reference_bindings(request)
         metadata = {
             "provider": self.provider.name,
             "model_version": self.provider.model_version,
@@ -368,7 +370,7 @@ class AnimeApiAdapter:
             "style_preset": request.style_preset,
             "prompt": request.prompt,
             "workflow_template": request.workflow_template,
-            "reference_bindings": list(request.reference_bindings),
+            "reference_bindings": reference_bindings,
             "output_image": str(output_image),
             "cache_key": cache_key,
             "status": status,
@@ -376,6 +378,17 @@ class AnimeApiAdapter:
             "estimated_cost": {"amount": 0, "currency": "USD", "source": "not_tracked"},
         }
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _reference_bindings(request: AnimeApiRequest) -> list[str]:
+        bindings = []
+        seen = set()
+        for binding in request.reference_bindings:
+            clean = binding.strip()
+            if clean and clean not in seen:
+                bindings.append(clean)
+                seen.add(clean)
+        return bindings
 
     @staticmethod
     def _sha256(path: Path) -> str:

@@ -64,7 +64,17 @@ class AnimeApiAdapterTest(unittest.TestCase):
                 output_dir=root / "anime_frames",
                 metadata_dir=root / "api_metadata",
             )
-            request = AnimeApiRequest(
+            dirty_request = AnimeApiRequest(
+                project_id="p01",
+                episode_id="e01",
+                shot_id="s01",
+                source_image=source,
+                style_preset="clean_anime",
+                prompt="rain alley",
+                workflow_template="comfyui_external_anime",
+                reference_bindings=(" rain_alley ", "", "rain_alley"),
+            )
+            clean_request = AnimeApiRequest(
                 project_id="p01",
                 episode_id="e01",
                 shot_id="s01",
@@ -75,11 +85,15 @@ class AnimeApiAdapterTest(unittest.TestCase):
                 reference_bindings=("rain_alley",),
             )
 
-            result = adapter.stylize(request)
+            result = adapter.stylize(dirty_request)
+            cached = adapter.stylize(clean_request)
 
             metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(metadata["workflow_template"], "comfyui_external_anime")
             self.assertEqual(metadata["reference_bindings"], ["rain_alley"])
+            self.assertTrue(cached.cache_hit)
+            self.assertEqual(cached.output_image, result.output_image)
+            self.assertEqual(cached.metadata_path, result.metadata_path)
             self.assertEqual(
                 metadata["estimated_cost"],
                 {"amount": 0, "currency": "USD", "source": "not_tracked"},
