@@ -531,31 +531,40 @@ export function App() {
       await refreshJobs();
     });
 
+  const confirmJobRealApiUse = (job: Job, estimatedText: string): { confirmed: boolean; confirmOpenai: boolean } => {
+    if (job.provider === "mock") return { confirmed: true, confirmOpenai: false };
+
+    const template = workflowTemplates.find((item) => item.template_id === job.workflow_template);
+    const confirmOpenai = template
+      ? template.requires_openai_confirmation || template.consumes_api
+      : job.provider === "openai" || job.provider === "comfyui";
+    if (!confirmOpenai) return { confirmed: true, confirmOpenai: false };
+
+    const templateName = template?.name ?? `未知 workflow template "${job.workflow_template || "未设置"}"`;
+    const routeSummary = template?.route_summary ?? `${job.provider} route 未能在 workflow templates 中确认`;
+    const confirmed = window.confirm(
+      `Workflow template "${templateName}" uses route "${routeSummary}". 重试 ${estimatedText} 可能消耗真实图片 API 配额。是否继续？`,
+    );
+    if (!confirmed) {
+      setNotice("已取消真实 API 重试，没有创建新任务。");
+      return { confirmed: false, confirmOpenai };
+    }
+    return { confirmed: true, confirmOpenai };
+  };
+
   const retryJob = (job: Job) =>
     runBusy(`job-retry-${job.job_id}`, async () => {
-      if (job.provider === "openai") {
-        const confirmed = window.confirm(`将重试 gpt-image-2 API 任务 ${job.job_id}，可能继续消耗真实额度，是否继续？`);
-        if (!confirmed) {
-          setNotice("已取消真实 API 重试，没有创建新任务。");
-          return;
-        }
-      }
-      await api.retryJob(job.job_id, job.provider === "openai");
+      const { confirmed, confirmOpenai } = confirmJobRealApiUse(job, `job ${job.job_id}`);
+      if (!confirmed) return;
+      await api.retryJob(job.job_id, confirmOpenai);
       await refreshJobs();
     });
 
-  const confirmOpenAIRetry = (job: Job, label: string) => {
-    if (job.provider !== "openai") return true;
-    return window.confirm(`将重试 gpt-image-2 API 任务 ${label}，可能消耗真实额度，是否继续？`);
-  };
-
   const retryFailedJob = (job: Job) =>
     runBusy(`job-retry-failed-${job.job_id}`, async () => {
-      if (!confirmOpenAIRetry(job, `${job.job_id} 的失败步骤`)) {
-        setNotice("已取消真实 API 重跑。");
-        return;
-      }
-      const result = await api.retryFailedJob(job.job_id, job.provider === "openai");
+      const { confirmed, confirmOpenai } = confirmJobRealApiUse(job, `failed steps for job ${job.job_id}`);
+      if (!confirmed) return;
+      const result = await api.retryFailedJob(job.job_id, confirmOpenai);
       setNotice("失败步骤已加入重跑队列");
       setEpisodeLog(`已创建重跑任务：${result.job.job_id}`);
       await Promise.all([refreshJobs(), loadJobDetail(job.job_id)]);
@@ -563,11 +572,9 @@ export function App() {
 
   const retryJobEpisode = (job: Job, episodeId: string) =>
     runBusy(`job-retry-episode-${job.job_id}-${episodeId}`, async () => {
-      if (!confirmOpenAIRetry(job, `${job.job_id} / ${episodeId}`)) {
-        setNotice("已取消真实 API 重跑。");
-        return;
-      }
-      const result = await api.retryJobEpisode(job.job_id, episodeId, job.provider === "openai");
+      const { confirmed, confirmOpenai } = confirmJobRealApiUse(job, `episode ${episodeId} for job ${job.job_id}`);
+      if (!confirmed) return;
+      const result = await api.retryJobEpisode(job.job_id, episodeId, confirmOpenai);
       setNotice("本集已加入重跑队列");
       setEpisodeLog(`已创建重跑任务：${result.job.job_id}`);
       await Promise.all([refreshJobs(), loadJobDetail(job.job_id)]);
@@ -575,11 +582,12 @@ export function App() {
 
   const retryJobEpisodeFromStep = (job: Job, episodeId: string, step: JobStep) =>
     runBusy(`job-retry-step-${job.job_id}-${episodeId}-${step}`, async () => {
-      if (!confirmOpenAIRetry(job, `${job.job_id} / ${episodeId} / ${jobStepLabel(step)}`)) {
-        setNotice("已取消真实 API 重跑。");
-        return;
-      }
-      const result = await api.retryJobEpisodeFromStep(job.job_id, episodeId, step, job.provider === "openai");
+      const { confirmed, confirmOpenai } = confirmJobRealApiUse(
+        job,
+        `${jobStepLabel(step)} step for episode ${episodeId} in job ${job.job_id}`,
+      );
+      if (!confirmed) return;
+      const result = await api.retryJobEpisodeFromStep(job.job_id, episodeId, step, confirmOpenai);
       setNotice("指定步骤已加入重跑队列");
       setEpisodeLog(`已创建重跑任务：${result.job.job_id}`);
       await Promise.all([refreshJobs(), loadJobDetail(job.job_id)]);
