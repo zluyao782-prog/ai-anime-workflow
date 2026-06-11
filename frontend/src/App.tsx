@@ -244,7 +244,12 @@ export function App() {
   };
 
   useEffect(() => {
-    Promise.all([refreshStatus(), refreshProjectLibrary(), refreshJobs(), refreshProductionReadiness()]).catch((error: Error) => setLoadError(error.message));
+    Promise.all([
+      refreshStatus(),
+      refreshProjectLibrary(),
+      refreshJobs(),
+      refreshProductionReadiness().catch((error: Error) => setNotice(error.message)),
+    ]).catch((error: Error) => setLoadError(error.message));
     api.listWorkflowTemplates().then((data) => setWorkflowTemplates(data.templates)).catch((error: Error) => setNotice(error.message));
   }, []);
 
