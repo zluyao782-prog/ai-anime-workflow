@@ -4,9 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 import urllib.error
 import urllib.request
 from typing import Any
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from anime_workflow.jobs.models import DEFAULT_WORKFLOW_TEMPLATES
 
 BASE_URL = "http://127.0.0.1:7860"
 TIMEOUT_SECONDS = 30
@@ -34,14 +41,21 @@ def print_json(label: str, payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a guarded production loop smoke against the local launcher API.")
     parser.add_argument("--provider", choices=("mock", "openai", "comfyui"), default="mock")
-    parser.add_argument("--workflow-template", default="mock_image")
+    parser.add_argument(
+        "--workflow-template",
+        default=None,
+        help="Workflow template to send. Defaults to the selected provider's template.",
+    )
     parser.add_argument("--confirm-openai", action="store_true")
     parser.add_argument("--project-id", default="smoke_production")
     parser.add_argument("--episode-id", default="episode_001")
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.workflow_template is None:
+        args.workflow_template = DEFAULT_WORKFLOW_TEMPLATES[args.provider]
+    return args
 
 
 def main() -> int:

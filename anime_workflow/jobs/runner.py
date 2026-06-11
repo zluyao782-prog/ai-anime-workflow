@@ -185,6 +185,8 @@ class JobRunner:
                 workflow_template=workflow_template_by_id(workflow_template),
             )
         if provider_name == "openai":
+            if confirm_openai is not True:
+                raise ValueError("openai provider requires confirmation")
             config = self.config_loader()
             api_key = str(config.get("openai_api_key") or "")
             if not api_key:

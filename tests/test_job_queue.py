@@ -7,6 +7,7 @@ from unittest import mock
 from anime_workflow.jobs.runner import JobRunner
 from anime_workflow.jobs.store import JobStore
 from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard
+from scripts.smoke_production_loop import parse_args as parse_smoke_args
 
 
 class JobQueueStoreTest(unittest.TestCase):
@@ -418,6 +419,59 @@ class JobRunnerTest(unittest.TestCase):
             self.assertEqual(stored["items"][0]["status"], "failed")
             self.assertIn("OpenAI API Key is not configured", stored["items"][0]["error"])
 
+    def test_runner_rejects_unconfirmed_openai_legacy_job_before_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jobs_dir = root / "jobs"
+            jobs_dir.mkdir(parents=True)
+            job_id = "job_legacy_openai"
+            (jobs_dir / f"{job_id}.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job_id,
+                        "project_id": "demo",
+                        "episode_ids": ["episode_001"],
+                        "steps": ["images"],
+                        "provider": "openai",
+                        "workflow_template": "openai_image",
+                        "confirm_openai": False,
+                        "status": "queued",
+                        "progress": 0,
+                        "completed_steps": 0,
+                        "total_steps": 1,
+                        "current_episode_id": "",
+                        "current_step": "",
+                        "error": "",
+                        "cancel_requested": False,
+                        "created_at": "2026-06-04T00:00:00+00:00",
+                        "updated_at": "2026-06-04T00:00:00+00:00",
+                        "started_at": "",
+                        "finished_at": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = JobStore(jobs_dir)
+            project_store = build_project_store(root)
+            images_mock = mock.Mock()
+
+            with mock.patch("anime_workflow.jobs.runner.generate_episode_images", images_mock):
+                failed = JobRunner(
+                    job_store=store,
+                    project_store=project_store,
+                    storyboard_dir=root / "storyboards",
+                    source_dir=root / "source",
+                    image_dir=root / "images",
+                    metadata_dir=root / "metadata",
+                    output_dir=root / "exports",
+                    config_loader=lambda: {"openai_api_key": "sk-test"},
+                ).run_next()
+
+            self.assertEqual(failed["job_id"], job_id)
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("openai provider requires confirmation", failed["error"])
+            images_mock.assert_not_called()
+
     def test_comfyui_job_with_openai_key_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -602,6 +656,24 @@ class JobRunnerTest(unittest.TestCase):
             self.assertEqual(cancelled["status"], "cancelled")
             stored = store.get_job(job["job_id"])
             self.assertEqual([(item["step"], item["status"]) for item in stored["items"]], [("storyboard", "completed"), ("images", "cancelled")])
+
+
+class SmokeProductionLoopTest(unittest.TestCase):
+    def test_smoke_defaults_workflow_template_to_selected_provider(self):
+        self.assertEqual(parse_smoke_args(["--provider", "mock"]).workflow_template, "mock_image")
+        self.assertEqual(
+            parse_smoke_args(["--provider", "openai", "--confirm-openai"]).workflow_template,
+            "openai_image",
+        )
+        self.assertEqual(
+            parse_smoke_args(["--provider", "comfyui", "--confirm-openai"]).workflow_template,
+            "comfyui_external_anime",
+        )
+
+    def test_smoke_preserves_explicit_workflow_template(self):
+        args = parse_smoke_args(["--provider", "openai", "--confirm-openai", "--workflow-template", "openai_image"])
+
+        self.assertEqual(args.workflow_template, "openai_image")
 
 
 def build_project_store(root: Path):
