@@ -34,6 +34,7 @@ import {
   OutputItem,
   Project,
   ProjectEpisode,
+  ProductionReadiness,
   PublicConfig,
   ScriptResult,
   Storyboard,
@@ -146,6 +147,7 @@ export function App() {
   const [styles, setStyles] = useState<StyleTemplate[]>([]);
   const [references, setReferences] = useState<ContinuityReference[]>([]);
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([]);
+  const [productionReadiness, setProductionReadiness] = useState<ProductionReadiness | null>(null);
   const [projectEpisodes, setProjectEpisodes] = useState<ProjectEpisode[]>([]);
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -228,6 +230,12 @@ export function App() {
     return data.jobs;
   };
 
+  const refreshProductionReadiness = async () => {
+    const data = await api.productionReadiness();
+    setProductionReadiness(data.readiness);
+    return data.readiness;
+  };
+
   const loadJobDetail = async (jobId: string) => {
     const data = await api.getJob(jobId);
     setSelectedJobId(jobId);
@@ -236,7 +244,7 @@ export function App() {
   };
 
   useEffect(() => {
-    Promise.all([refreshStatus(), refreshProjectLibrary(), refreshJobs()]).catch((error: Error) => setLoadError(error.message));
+    Promise.all([refreshStatus(), refreshProjectLibrary(), refreshJobs(), refreshProductionReadiness()]).catch((error: Error) => setLoadError(error.message));
     api.listWorkflowTemplates().then((data) => setWorkflowTemplates(data.templates)).catch((error: Error) => setNotice(error.message));
   }, []);
 
@@ -728,24 +736,38 @@ export function App() {
       setReviewLog(`已本地重写镜头：${reviewShotId}`);
     });
 
+  const confirmReviewShotRealApiUse = (): { confirmed: boolean; confirmOpenai: boolean } => {
+    const template = workflowTemplates.find((item) => item.template_id === reviewWorkflowTemplate);
+    const confirmOpenai = template
+      ? template.requires_openai_confirmation || template.consumes_api
+      : reviewImageProvider === "openai" || reviewImageProvider === "comfyui";
+    if (!confirmOpenai) return { confirmed: true, confirmOpenai: false };
+
+    const templateName = template?.name ?? `未知 workflow template "${reviewWorkflowTemplate || "未设置"}"`;
+    const routeSummary = template?.route_summary ?? `${reviewImageProvider} route 未能在 workflow templates 中确认`;
+    const confirmed = window.confirm(
+      `Workflow template "${templateName}" uses route "${routeSummary}". 重新生成当前镜头可能消耗真实图片 API 配额。是否继续？`,
+    );
+    if (!confirmed) {
+      setNotice("已取消真实 API 单镜头图片生成。");
+      return { confirmed: false, confirmOpenai };
+    }
+    return { confirmed: true, confirmOpenai };
+  };
+
   const regenerateReviewShotImage = () =>
     runBusy("review-regenerate-shot-image", async () => {
       if (!reviewStoryboard) throw new Error("请先载入分镜");
       if (!reviewShotId) throw new Error("请选择要生成图片的镜头");
-      if (reviewImageProvider === "openai") {
-        const confirmed = window.confirm("将调用外部图片 API 重新生成当前镜头，可能消耗额度。是否继续？");
-        if (!confirmed) {
-          setNotice("已取消外部图片 API 单镜头生成。");
-          return;
-        }
-      }
+      const { confirmed, confirmOpenai } = confirmReviewShotRealApiUse();
+      if (!confirmed) return;
       const result = await api.regenerateStoryboardShotImage(
         currentProjectId,
         reviewEpisodeId,
         reviewShotId,
         reviewImageProvider,
         reviewWorkflowTemplate,
-        reviewImageProvider === "openai",
+        confirmOpenai,
       );
       setReviewStoryboard(result.storyboard);
       setReviewLog(`已重生成镜头图片：${reviewShotId} / ${result.provider ?? reviewImageProvider}`);
@@ -900,6 +922,26 @@ export function App() {
               {statusCards.map((card) => (
                 <StatusCard key={card.title} {...card} />
               ))}
+            </section>
+            <section className="mt-4">
+              <ProductionReadinessPanel
+                readiness={productionReadiness}
+                action={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      runBusy("readiness-refresh", async () => {
+                        await refreshProductionReadiness();
+                      })
+                    }
+                    busy={busyAction === "readiness-refresh"}
+                    icon={RefreshCw}
+                  >
+                    刷新
+                  </Button>
+                }
+              />
             </section>
             <section className="mt-4 grid grid-cols-[1.2fr_0.8fr] gap-4 max-[900px]:grid-cols-1">
               <Panel title="安装路径" icon={FileText}>
@@ -2112,6 +2154,50 @@ function StatusMetric({ label, value }: { label: string; value: string }) {
       <div className="text-xs text-ink-500">{label}</div>
       <div className="mt-1 break-all font-mono text-lg font-semibold text-ink-900">{value}</div>
     </article>
+  );
+}
+
+function ProductionReadinessPanel({ readiness, action }: { readiness: ProductionReadiness | null; action?: React.ReactNode }) {
+  const checks = Object.entries(readiness?.checks ?? {});
+  return (
+    <Panel title="生产可用性" icon={CheckCircle2} action={action}>
+      <div className="mb-3 grid grid-cols-[160px_minmax(0,1fr)] gap-2 max-[640px]:grid-cols-1">
+        <div className="rounded-ui bg-slate-50 px-3 py-2">
+          <div className="text-[11px] font-medium text-ink-500">整体状态</div>
+          <div className="mt-0.5 font-mono text-sm font-semibold text-ink-900">{readiness ? (readiness.ok ? "可用" : "待处理") : "加载中"}</div>
+        </div>
+        <div className="rounded-ui bg-slate-50 px-3 py-2">
+          <div className="text-[11px] font-medium text-ink-500">项目根目录</div>
+          <div className="mt-0.5 break-all font-mono text-sm font-semibold text-ink-900">{readiness?.project_root ?? "-"}</div>
+        </div>
+      </div>
+      {checks.length ? (
+        <div className="grid gap-2">
+          {checks.map(([name, check]) => {
+            const details = [
+              check.detail,
+              check.path ? `path: ${check.path}` : "",
+              check.base_url ? `base_url: ${check.base_url}` : "",
+              check.model ? `model: ${check.model}` : "",
+              check.templates?.length ? `templates: ${check.templates.map((template) => template.name).join(", ")}` : "",
+            ].filter(Boolean);
+            return (
+              <article key={name} className="rounded-ui border border-line bg-white px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="break-all font-mono text-xs font-semibold text-ink-800">{name}</div>
+                  <span className={clsx("rounded-ui px-2 py-1 text-[11px] font-medium", check.ok ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700")}>
+                    {check.ok ? "可用" : "待处理"}
+                  </span>
+                </div>
+                {details.length > 0 && <div className="mt-1 break-all font-mono text-[11px] leading-5 text-ink-500">{details.join(" / ")}</div>}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded-ui border border-line bg-white px-3 py-2 text-sm text-ink-500">等待生产可用性检查。</div>
+      )}
+    </Panel>
   );
 }
 

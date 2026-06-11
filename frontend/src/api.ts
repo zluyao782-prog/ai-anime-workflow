@@ -224,6 +224,22 @@ export type WorkflowTemplate = {
   description: string;
 };
 
+export type ProductionReadiness = {
+  ok: boolean;
+  checks: Record<
+    string,
+    {
+      ok: boolean;
+      detail?: string;
+      path?: string;
+      base_url?: string;
+      model?: string;
+      templates?: WorkflowTemplate[];
+    }
+  >;
+  project_root: string;
+};
+
 export type JobStep = "storyboard" | "images" | "video";
 
 export type JobItemStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped";
@@ -379,6 +395,7 @@ export const api = {
       body: JSON.stringify(reference),
     }),
   listWorkflowTemplates: () => request<{ ok: boolean; templates: WorkflowTemplate[] }>("/api/workflow-templates"),
+  productionReadiness: () => request<{ ok: boolean; readiness: ProductionReadiness }>("/api/production/readiness"),
   listProjectEpisodes: (projectId: string) =>
     request<{ ok: boolean; episodes: ProjectEpisode[] }>(`/api/projects/${encodeURIComponent(projectId)}/episodes`),
   createEpisodeBatch: (projectId: string, count: number, direction: string) =>
