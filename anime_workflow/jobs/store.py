@@ -112,6 +112,7 @@ class JobStore:
                     "episode_ids": existing["episode_ids"],
                     "steps": existing["steps"],
                     "provider": existing["provider"],
+                    "workflow_template": existing.get("workflow_template"),
                     "confirm_openai": confirm_openai,
                 }
             )
@@ -209,6 +210,7 @@ class JobStore:
                 "episode_ids": episode_ids,
                 "steps": steps,
                 "provider": existing["provider"],
+                "workflow_template": existing.get("workflow_template"),
                 "confirm_openai": confirm_openai,
             }
         )

@@ -434,6 +434,46 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server(server, thread)
 
+    def test_jobs_api_comfyui_with_openai_key_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects", jobs_dir=Path(tmp) / "jobs", job_runner=NoopRunner())
+            try:
+                self.request_json(server, "/api/config", {"openai_api_key": "sk-test"})
+
+                status, payload = self.request_json(
+                    server,
+                    "/api/jobs",
+                    {"project_id": "demo", "episode_ids": ["episode_001"], "steps": ["images"], "provider": "comfyui"},
+                )
+
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertEqual(payload["error"], "comfyui openai route requires confirmation")
+                self.assertEqual(list((Path(tmp) / "jobs").glob("job_*.json")), [])
+            finally:
+                self.stop_server(server, thread)
+                launcher_server.CONFIG_PATH = previous_config_path
+
+    def test_jobs_api_comfyui_without_openai_key_can_create_mock_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects", jobs_dir=Path(tmp) / "jobs", job_runner=NoopRunner())
+            try:
+                status, payload = self.request_json(
+                    server,
+                    "/api/jobs",
+                    {"project_id": "demo", "episode_ids": ["episode_001"], "steps": ["images"], "provider": "comfyui"},
+                )
+
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(payload["job"]["provider"], "comfyui")
+                self.assertEqual(payload["job"]["workflow_template"], "comfyui_external_anime")
+            finally:
+                self.stop_server(server, thread)
+                launcher_server.CONFIG_PATH = previous_config_path
+
     def test_jobs_api_reads_detail_and_creates_targeted_retries(self):
         with tempfile.TemporaryDirectory() as tmp:
             runner = NoopRunner()

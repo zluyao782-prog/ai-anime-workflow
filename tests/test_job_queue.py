@@ -160,6 +160,26 @@ class JobQueueStoreTest(unittest.TestCase):
 
             self.assertEqual(job["provider"], "comfyui")
             self.assertEqual(job["steps"], ["images"])
+            self.assertEqual(job["workflow_template"], "comfyui_external_anime")
+
+    def test_create_job_preserves_workflow_template_and_openai_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(Path(tmp) / "jobs")
+
+            job = store.create_job(
+                {
+                    "project_id": "demo",
+                    "episode_ids": ["episode_001"],
+                    "steps": ["images"],
+                    "provider": "comfyui",
+                    "workflow_template": "comfyui_external_anime",
+                    "confirm_openai": True,
+                }
+            )
+            stored = store.get_job(job["job_id"])
+
+            self.assertEqual(stored["workflow_template"], "comfyui_external_anime")
+            self.assertTrue(stored["confirm_openai"])
 
     def test_openai_job_requires_confirmation_for_create_and_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -428,6 +448,59 @@ class JobRunnerTest(unittest.TestCase):
             self.assertEqual(result["job_id"], job["job_id"])
             self.assertEqual(result["status"], "failed")
             self.assertIn("comfyui openai route requires confirmation", result["error"])
+
+    def test_comfyui_job_with_openai_key_uses_persisted_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job_store = JobStore(root / "jobs")
+            project_store = build_project_store(root)
+            storyboard_dir = root / "storyboards"
+            job = job_store.create_job(
+                {
+                    "project_id": "demo",
+                    "episode_ids": ["episode_001"],
+                    "steps": ["images"],
+                    "provider": "comfyui",
+                    "workflow_template": "comfyui_external_anime",
+                    "confirm_openai": True,
+                }
+            )
+            storyboard = generate_storyboard(
+                {
+                    "project_id": "demo",
+                    "episode_id": "episode_001",
+                    "premise": "rain alley clue",
+                    "shot_count": 1,
+                    "duration_seconds": 3,
+                }
+            )
+            save_storyboard(storyboard, storyboard_dir)
+            runner = JobRunner(
+                job_store=job_store,
+                project_store=project_store,
+                storyboard_dir=storyboard_dir,
+                source_dir=root / "source",
+                image_dir=root / "images",
+                metadata_dir=root / "metadata",
+                output_dir=root / "exports",
+                config_loader=lambda: {"openai_api_key": "sk-test"},
+            )
+
+            def fake_images(storyboard, provider, source_dir, output_dir, metadata_dir):
+                return storyboard
+
+            with mock.patch.object(runner, "_provider", return_value=mock.Mock(name="fake_provider")) as provider_mock, mock.patch(
+                "anime_workflow.jobs.runner.generate_episode_images", fake_images
+            ):
+                result = runner.run_next()
+
+            self.assertEqual(result["job_id"], job["job_id"])
+            self.assertEqual(result["status"], "completed")
+            provider_mock.assert_called_once_with(
+                "comfyui",
+                workflow_template="comfyui_external_anime",
+                confirm_openai=True,
+            )
 
     def test_runner_builds_comfyui_provider_from_remote_config(self):
         with tempfile.TemporaryDirectory() as tmp:

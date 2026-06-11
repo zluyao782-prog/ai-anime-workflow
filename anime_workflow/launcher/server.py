@@ -300,7 +300,9 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_job_create(self) -> None:
         try:
-            job = self.job_store.create_job(self._read_json())
+            body = self._read_json()
+            self._ensure_comfyui_job_confirmed(body)
+            job = self.job_store.create_job(body)
             self.job_runner.start()
             self._json({"ok": True, "job": job})
         except ValueError as exc:
@@ -325,16 +327,19 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "job": self.job_store.request_cancel(job_id)})
                 return
             if action["action"] == "retry":
+                self._ensure_comfyui_job_confirmed(self.job_store.get_job(job_id), body)
                 job = self.job_store.retry_job(job_id, confirm_openai=body.get("confirm_openai") is True)
                 self.job_runner.start()
                 self._json({"ok": True, "job": job})
                 return
             if action["action"] == "retry_failed":
+                self._ensure_comfyui_job_confirmed(self.job_store.get_job(job_id), body)
                 job = self.job_store.create_failed_retry_job(job_id, confirm_openai=body.get("confirm_openai") is True)
                 self.job_runner.start()
                 self._json({"ok": True, "job": job})
                 return
             if action["action"] == "retry_episode":
+                self._ensure_comfyui_job_confirmed(self.job_store.get_job(job_id), body)
                 job = self.job_store.create_episode_retry_job(
                     job_id,
                     action["episode_id"],
@@ -344,6 +349,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "job": job})
                 return
             if action["action"] == "retry_episode_step":
+                self._ensure_comfyui_job_confirmed(self.job_store.get_job(job_id), body)
                 job = self.job_store.create_episode_step_retry_job(
                     job_id,
                     action["episode_id"],
@@ -704,6 +710,16 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 endpoint=config.get("openai_base_url", "https://aigate.zhixingjidian.cn"),
             )
         return MockAnimeProvider()
+
+    def _ensure_comfyui_job_confirmed(self, job: dict[str, Any], body: dict[str, Any] | None = None) -> None:
+        if str(job.get("provider") or "").lower() != "comfyui":
+            return
+        config = self.config_store.load()
+        if not str(config.get("openai_api_key") or ""):
+            return
+        confirm_openai = (body if body is not None else job).get("confirm_openai") is True
+        if not confirm_openai:
+            raise ValueError("comfyui openai route requires confirmation")
 
     def _comfyui_image_provider(
         self,

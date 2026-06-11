@@ -5,12 +5,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from anime_workflow.projects.models import slug
+from anime_workflow.services.workflow_templates import workflow_template_by_id
 
 
 VALID_PROVIDERS = {"mock", "openai", "comfyui"}
 VALID_STATUSES = {"queued", "running", "completed", "failed", "cancelled"}
 VALID_STEPS = {"storyboard", "images", "video"}
 VALID_ITEM_STATUSES = {"pending", "running", "completed", "failed", "cancelled", "skipped"}
+DEFAULT_WORKFLOW_TEMPLATES = {
+    "mock": "mock_image",
+    "openai": "openai_image",
+    "comfyui": "comfyui_external_anime",
+}
 
 
 def now_iso() -> str:
@@ -116,6 +122,10 @@ def job_from(values: dict[str, Any], existing: dict[str, Any] | None = None) -> 
     provider = str(values.get("provider") or existing.get("provider") or "mock").strip().lower()
     if provider not in VALID_PROVIDERS:
         raise ValueError("provider must be mock, openai, or comfyui")
+    workflow_template = str(
+        values.get("workflow_template") or existing.get("workflow_template") or DEFAULT_WORKFLOW_TEMPLATES[provider]
+    ).strip()
+    workflow_template_by_id(workflow_template)
 
     steps = normalize_steps(values.get("steps", existing.get("steps")))
     episode_ids = normalize_episode_ids(values.get("episode_ids", existing.get("episode_ids")))
@@ -136,6 +146,8 @@ def job_from(values: dict[str, Any], existing: dict[str, Any] | None = None) -> 
         "episode_ids": episode_ids,
         "steps": steps,
         "provider": provider,
+        "workflow_template": workflow_template,
+        "confirm_openai": values.get("confirm_openai", existing.get("confirm_openai", False)) is True,
         "status": status,
         "progress": progress,
         "completed_steps": max(0, min(completed_steps, total_steps)),
