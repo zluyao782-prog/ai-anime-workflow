@@ -160,6 +160,7 @@ export function App() {
   const [selectedEpisodeIds, setSelectedEpisodeIds] = useState<string[]>([]);
   const [jobStepMode, setJobStepMode] = useState<"full" | JobStep>("full");
   const [jobProvider, setJobProvider] = useState<JobProvider>("mock");
+  const [jobWorkflowTemplate, setJobWorkflowTemplate] = useState("comfyui_external_anime");
   const [documentDraft, setDocumentDraft] = useState(defaultDocumentDraft);
   const [documentContentBase64, setDocumentContentBase64] = useState("");
   const [documentResult, setDocumentResult] = useState<DocumentAdaptResponse | null>(null);
@@ -251,6 +252,14 @@ export function App() {
   useEffect(() => {
     setSelectedEpisodeIds((current) => current.filter((episodeId) => projectEpisodes.some((episode) => episode.episode_id === episodeId)));
   }, [projectEpisodes]);
+
+  useEffect(() => {
+    if (workflowTemplates.length === 0) return;
+    const currentTemplate = workflowTemplates.find((template) => template.template_id === jobWorkflowTemplate);
+    if (currentTemplate?.provider === jobProvider) return;
+    const nextTemplate = workflowTemplates.find((template) => template.provider === jobProvider);
+    if (nextTemplate) setJobWorkflowTemplate(nextTemplate.template_id);
+  }, [jobProvider, jobWorkflowTemplate, workflowTemplates]);
 
   useEffect(() => {
     const hasActiveJobs = jobs.some((job) => job.status === "queued" || job.status === "running");
@@ -496,7 +505,8 @@ export function App() {
         episode_ids: selectedEpisodeIds,
         steps: [jobStepMode],
         provider: jobProvider,
-        confirm_openai: jobProvider === "openai",
+        workflow_template: jobWorkflowTemplate,
+        confirm_openai: jobProvider === "openai" || jobProvider === "comfyui",
       });
       setEpisodeLog(`任务已加入队列：${result.job.job_id}`);
       setNotice("批量生产任务已创建");
@@ -730,6 +740,7 @@ export function App() {
   const imageReadyCount = episode?.shots.filter((shot) => Boolean(shot.anime_image)).length ?? 0;
   const currentProject = projects.find((project) => project.project_id === currentProjectId);
   const currentProjectJobs = jobs.filter((job) => job.project_id === currentProjectId);
+  const jobWorkflowTemplateOptions = workflowTemplates.filter((template) => template.provider === jobProvider);
   const selectedImageEstimate = projectEpisodes
     .filter((projectEpisode) => selectedEpisodeIds.includes(projectEpisode.episode_id))
     .reduce((sum, projectEpisode) => sum + projectEpisode.shot_count, 0);
@@ -1584,7 +1595,7 @@ export function App() {
                     </div>
                   </form>
                   <div className="mt-3 grid gap-3 rounded-ui border border-slate-200 bg-slate-50 p-4">
-                    <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2 max-[820px]:grid-cols-1">
+                    <div className="grid grid-cols-[1fr_1fr_1fr_auto] items-end gap-2 max-[980px]:grid-cols-1">
                       <Field label="任务步骤">
                         <select className="input" value={jobStepMode} onChange={(event) => setJobStepMode(event.target.value as "full" | JobStep)}>
                           <option value="full">完整流程：分镜 + 图片 + 视频</option>
@@ -1598,6 +1609,16 @@ export function App() {
                           <option value="mock">mock 占位图</option>
                           <option value="openai">gpt-image-2 API</option>
                           <option value="comfyui">ComfyUI 工作流</option>
+                        </select>
+                      </Field>
+                      <Field label="Workflow Template">
+                        <select className="input" value={jobWorkflowTemplate} onChange={(event) => setJobWorkflowTemplate(event.target.value)}>
+                          {jobWorkflowTemplateOptions.length === 0 && <option value={jobWorkflowTemplate}>{jobWorkflowTemplate}</option>}
+                          {jobWorkflowTemplateOptions.map((template) => (
+                            <option key={template.template_id} value={template.template_id}>
+                              {template.name} ({template.template_id})
+                            </option>
+                          ))}
                         </select>
                       </Field>
                       <Button type="button" onClick={createProductionJob} busy={busyAction === "job-create"} icon={Play} disabled={selectedEpisodeIds.length === 0}>
@@ -2155,7 +2176,7 @@ function JobRow({
             <span className="break-all font-mono text-xs text-ink-500">{job.job_id}</span>
           </div>
           <div className="mt-1 font-mono text-xs text-ink-500">
-            {job.provider} / {job.steps.join("+")} / {job.episode_ids.length} 集 / {job.completed_steps}/{job.total_steps}
+            {job.provider} / {job.workflow_template} / {job.steps.join("+")} / {job.episode_ids.length} 集 / {job.completed_steps}/{job.total_steps}
           </div>
           {(job.current_episode_id || job.current_step) && (
             <div className="mt-1 font-mono text-xs text-ink-500">
@@ -2247,7 +2268,7 @@ function JobDetailPanel({
       <div className="mb-3 grid gap-1 font-mono text-xs text-ink-500">
         <div className="break-all">{job.job_id}</div>
         <div>
-          {job.provider} / {job.steps.join("+")} / {job.status} / {job.progress}%
+          {job.provider} / {job.workflow_template} / {job.steps.join("+")} / {job.status} / {job.progress}%
         </div>
       </div>
       <div className="overflow-x-auto">

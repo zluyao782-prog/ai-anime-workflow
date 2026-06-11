@@ -244,6 +244,8 @@ export type Job = {
   episode_ids: string[];
   steps: JobStep[];
   provider: JobProvider;
+  workflow_template: string;
+  confirm_openai: boolean;
   status: JobStatus;
   progress: number;
   completed_steps: number;
@@ -264,6 +266,7 @@ export type CreateJobRequest = {
   episode_ids: string[];
   steps: Array<JobStep | "full">;
   provider: JobProvider;
+  workflow_template?: string;
   confirm_openai?: boolean;
 };
 
