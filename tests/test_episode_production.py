@@ -1,9 +1,12 @@
+import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from anime_workflow.services.anime_api_adapter import MockAnimeProvider
-from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images
+from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images, generate_shot_image
 from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard
 
 
@@ -32,6 +35,7 @@ class EpisodeProductionTest(unittest.TestCase):
             self.assertEqual(sum(shot["duration"] for shot in loaded["shots"]), 18)
             self.assertIn("雨夜主角收到匿名信", loaded["shots"][0]["image_prompt"])
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required for video export integration")
     def test_mock_episode_images_and_video_are_generated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -62,6 +66,80 @@ class EpisodeProductionTest(unittest.TestCase):
             self.assertTrue(Path(with_images["shots"][0]["source_image"]).exists())
             self.assertTrue(Path(with_images["shots"][0]["anime_image"]).exists())
             self.assertTrue(video_path.exists())
+
+    def test_generate_shot_image_updates_only_requested_shot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference_image = root / "refs/rain.png"
+            reference_image.parent.mkdir()
+            reference_image.write_bytes(b"reference-image")
+            storyboard = generate_storyboard(
+                {
+                    "project_id": "demo_project",
+                    "episode_id": "episode_001",
+                    "genre": "都市",
+                    "premise": "主角准备发布第一集",
+                    "protagonist": "短剧导演",
+                    "style_preset": "clean_anime_drama",
+                    "platform": "douyin",
+                    "duration_seconds": 6,
+                    "shot_count": 2,
+                }
+            )
+            storyboard["shots"][0]["anime_image"] = "existing-shot-001.png"
+            storyboard["shots"][1]["reference_bindings"] = ["rain_alley"]
+
+            def fake_source_frame(path: Path, index: int) -> None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(f"source-{index}".encode("utf-8"))
+
+            with mock.patch("anime_workflow.story.episode_runner.create_source_frame", fake_source_frame):
+                updated = generate_shot_image(
+                    storyboard=storyboard,
+                    shot_id="shot_002",
+                    provider=MockAnimeProvider(),
+                    source_dir=root / "source_frames",
+                    output_dir=root / "anime_frames",
+                    metadata_dir=root / "metadata",
+                    references=[
+                        {
+                            "reference_id": "rain_alley",
+                            "reference_type": "location",
+                            "prompt_fragment": "rainy narrow alley, wet reflective pavement",
+                            "reference_image": str(reference_image),
+                        }
+                    ],
+                    workflow_template="comfyui_external_anime",
+                )
+
+            self.assertEqual(updated["shots"][0]["anime_image"], "existing-shot-001.png")
+            self.assertEqual(updated["shots"][1]["source_image"], str(root / "source_frames/demo_project/episode_001/shot_002.png"))
+            self.assertTrue(Path(updated["shots"][1]["anime_image"]).exists())
+            self.assertTrue(Path(updated["shots"][1]["metadata_path"]).exists())
+            self.assertEqual(updated["shots"][1]["workflow_template"], "comfyui_external_anime")
+            self.assertEqual(updated["shots"][1]["rerun_history"][0]["reference_bindings"], ["rain_alley"])
+            metadata = json.loads(Path(updated["shots"][1]["metadata_path"]).read_text(encoding="utf-8"))
+            self.assertIn("rainy narrow alley", metadata["prompt"])
+            self.assertEqual(metadata["reference_images"], [str(reference_image)])
+
+    def test_generate_shot_image_rejects_missing_shot(self):
+        storyboard = generate_storyboard(
+            {
+                "project_id": "demo_project",
+                "episode_id": "episode_001",
+                "shot_count": 1,
+            }
+        )
+
+        with self.assertRaisesRegex(FileNotFoundError, "shot not found"):
+            generate_shot_image(
+                storyboard=storyboard,
+                shot_id="missing",
+                provider=MockAnimeProvider(),
+                source_dir=Path("source_frames"),
+                output_dir=Path("anime_frames"),
+                metadata_dir=Path("metadata"),
+            )
 
 
 if __name__ == "__main__":

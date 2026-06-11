@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable
 from urllib import request as urllib_request
+from urllib.parse import urlencode
 
 
 class ComfyUIClient:
@@ -31,3 +33,46 @@ class ComfyUIClient:
         with self._opener(request) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def wait_for_history(self, prompt_id: str, timeout_seconds: int = 180, interval_seconds: float = 1.0) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            data = self.history(prompt_id)
+            if prompt_id in data:
+                return data[prompt_id]
+            if data.get("outputs"):
+                return data
+            time.sleep(interval_seconds)
+        raise TimeoutError(f"ComfyUI prompt timed out: {prompt_id}")
+
+    def view_image(self, filename: str, subfolder: str = "", image_type: str = "output") -> bytes:
+        query = urlencode({"filename": filename, "subfolder": subfolder, "type": image_type})
+        request = urllib_request.Request(f"{self.base_url}/view?{query}", method="GET")
+        with self._opener(request) as response:
+            return response.read()
+
+
+def extract_output_value(history: dict[str, Any]) -> str:
+    outputs = history.get("outputs") if isinstance(history, dict) else None
+    if not isinstance(outputs, dict):
+        raise ValueError("ComfyUI history has no outputs")
+    for output in outputs.values():
+        if not isinstance(output, dict):
+            continue
+        for key in ("string", "text"):
+            values = output.get(key)
+            if isinstance(values, list) and values:
+                return str(values[0])
+            if isinstance(values, str):
+                return values
+        images = output.get("images")
+        if isinstance(images, list) and images:
+            first = images[0]
+            if isinstance(first, dict) and first.get("filename"):
+                return json.dumps(
+                    {
+                        "filename": first.get("filename", ""),
+                        "subfolder": first.get("subfolder", ""),
+                        "type": first.get("type", "output"),
+                    }
+                )
+    raise ValueError("ComfyUI history has no readable output")

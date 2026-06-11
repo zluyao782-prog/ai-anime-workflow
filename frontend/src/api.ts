@@ -6,7 +6,9 @@ export type PublicConfig = {
   openai_text_model: string;
   openai_text_endpoint_mode: "chat_completions" | "responses";
   ollama_text_model: string;
+  comfyui_mode: "local" | "remote";
   comfyui_base_url: string;
+  comfyui_remote_base_url: string;
   output_dir: string;
 };
 
@@ -21,6 +23,8 @@ export type LauncherStatus = {
   ffmpeg: { ok: boolean; path: string };
   ollama: { ok: boolean; detail: string };
   comfyui: {
+    mode: "local" | "remote";
+    base_url: string;
     process_running: boolean;
     pid: number | null;
     api_running: boolean;
@@ -56,6 +60,25 @@ export type EpisodeShot = {
   anime_image: string;
   metadata_path?: string;
   cache_hit?: boolean;
+  reference_bindings?: string[];
+  workflow_template?: string;
+  rerun_history?: ShotRerunRecord[];
+  review_status?: "pending" | "approved" | "rejected" | "revise";
+  review_note?: string;
+  reviewed_at?: string;
+};
+
+export type ShotRerunRecord = {
+  provider: string;
+  model_version: string;
+  workflow_template: string;
+  prompt: string;
+  reference_bindings: string[];
+  source_image: string;
+  anime_image: string;
+  metadata_path: string;
+  cache_hit: boolean;
+  created_at: string;
 };
 
 export type Storyboard = {
@@ -71,6 +94,15 @@ export type Storyboard = {
   shot_count: number;
   shots: EpisodeShot[];
   video_path?: string;
+  review_versions?: StoryboardReviewVersion[];
+};
+
+export type StoryboardReviewVersion = {
+  version_id: string;
+  created_at: string;
+  note: string;
+  summary: Record<"pending" | "approved" | "rejected" | "revise", number>;
+  shots: Array<Pick<EpisodeShot, "shot_id" | "scene" | "dialogue" | "image_prompt" | "review_status" | "review_note" | "anime_image">>;
 };
 
 export type EpisodeStoryboardRequest = {
@@ -136,6 +168,21 @@ export type StyleTemplate = {
   updated_at: string;
 };
 
+export type ContinuityReferenceType = "character" | "prop" | "location" | "style" | "action";
+
+export type ContinuityReference = {
+  reference_id: string;
+  project_id: string;
+  reference_type: ContinuityReferenceType;
+  name: string;
+  description: string;
+  prompt_fragment: string;
+  reference_image: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProjectEpisode = {
   episode_id: string;
   project_id: string;
@@ -161,7 +208,14 @@ export type OutputItem = {
 
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
-export type JobProvider = "mock" | "openai";
+export type JobProvider = "mock" | "openai" | "comfyui";
+
+export type WorkflowTemplate = {
+  template_id: string;
+  name: string;
+  provider: JobProvider;
+  description: string;
+};
 
 export type JobStep = "storyboard" | "images" | "video";
 
@@ -272,15 +326,15 @@ export const api = {
   logs: (service: "comfyui" | "launcher") => request<{ log: string }>(`/api/logs?service=${service}`),
   saveConfig: (config: Partial<PublicConfig>) =>
     request<{ config: PublicConfig }>("/api/config", { method: "POST", body: JSON.stringify(config) }),
-  startComfy: () => request<{ status: string; pid?: number }>("/api/comfyui/start", { method: "POST", body: "{}" }),
-  stopComfy: () => request<{ status: string; pid?: number }>("/api/comfyui/stop", { method: "POST", body: "{}" }),
+  startComfy: () => request<{ status: string; pid?: number; base_url?: string }>("/api/comfyui/start", { method: "POST", body: "{}" }),
+  stopComfy: () => request<{ status: string; pid?: number; base_url?: string }>("/api/comfyui/stop", { method: "POST", body: "{}" }),
   runOpenAITest: () => request<ScriptResult>("/api/openai/test", { method: "POST", body: "{}" }),
   runMockTest: () => request<ScriptResult>("/api/mock/test", { method: "POST", body: "{}" }),
   getEpisode: (projectId: string, episodeId: string) =>
     request<EpisodeResponse>(`/api/episode?project_id=${encodeURIComponent(projectId)}&episode_id=${encodeURIComponent(episodeId)}`),
   createStoryboard: (payload: EpisodeStoryboardRequest) =>
     request<EpisodeResponse>("/api/episode/storyboard", { method: "POST", body: JSON.stringify(payload) }),
-  generateEpisodeImages: (projectId: string, episodeId: string, provider: "mock" | "openai", confirmOpenai = false) =>
+  generateEpisodeImages: (projectId: string, episodeId: string, provider: JobProvider, confirmOpenai = false) =>
     request<EpisodeResponse>("/api/episode/images", {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, episode_id: episodeId, provider, confirm_openai: confirmOpenai }),
@@ -307,6 +361,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(style),
     }),
+  listReferences: (projectId: string) =>
+    request<{ ok: boolean; references: ContinuityReference[] }>(`/api/projects/${encodeURIComponent(projectId)}/references`),
+  saveReference: (projectId: string, reference: Partial<ContinuityReference>) =>
+    request<{ ok: boolean; reference: ContinuityReference }>(`/api/projects/${encodeURIComponent(projectId)}/references`, {
+      method: "POST",
+      body: JSON.stringify(reference),
+    }),
+  listWorkflowTemplates: () => request<{ ok: boolean; templates: WorkflowTemplate[] }>("/api/workflow-templates"),
   listProjectEpisodes: (projectId: string) =>
     request<{ ok: boolean; episodes: ProjectEpisode[] }>(`/api/projects/${encodeURIComponent(projectId)}/episodes`),
   createEpisodeBatch: (projectId: string, count: number, direction: string) =>
@@ -349,7 +411,7 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/storyboard`,
       { method: "POST", body: "{}" },
     ),
-  generateProjectEpisodeImages: (projectId: string, episodeId: string, provider: "mock" | "openai", confirmOpenai = false) =>
+  generateProjectEpisodeImages: (projectId: string, episodeId: string, provider: JobProvider, confirmOpenai = false) =>
     request<ProjectEpisodeProductionResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/images`,
       { method: "POST", body: JSON.stringify({ provider, confirm_openai: confirmOpenai }) },
@@ -366,6 +428,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, episode_id: episodeId, storyboard }),
     }),
+  snapshotStoryboardReview: (projectId: string, episodeId: string, note: string) =>
+    request<EpisodeResponse>("/api/storyboard/review/snapshot", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, note }),
+    }),
   updateStoryboardShot: (projectId: string, episodeId: string, shotId: string, updates: Partial<EpisodeShot>) =>
     request<EpisodeResponse>("/api/storyboard/shot/update", {
       method: "POST",
@@ -375,5 +442,10 @@ export const api = {
     request<EpisodeResponse>("/api/storyboard/shot/rewrite", {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, episode_id: episodeId, shot_id: shotId, instruction, provider, confirm_openai: confirmOpenai }),
+    }),
+  regenerateStoryboardShotImage: (projectId: string, episodeId: string, shotId: string, provider: JobProvider, workflowTemplate: string, confirmOpenai = false) =>
+    request<EpisodeResponse>("/api/storyboard/shot/image", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, shot_id: shotId, provider, workflow_template: workflowTemplate, confirm_openai: confirmOpenai }),
     }),
 };

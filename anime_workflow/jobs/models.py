@@ -7,7 +7,7 @@ from typing import Any
 from anime_workflow.projects.models import slug
 
 
-VALID_PROVIDERS = {"mock", "openai"}
+VALID_PROVIDERS = {"mock", "openai", "comfyui"}
 VALID_STATUSES = {"queued", "running", "completed", "failed", "cancelled"}
 VALID_STEPS = {"storyboard", "images", "video"}
 VALID_ITEM_STATUSES = {"pending", "running", "completed", "failed", "cancelled", "skipped"}
@@ -115,7 +115,7 @@ def job_from(values: dict[str, Any], existing: dict[str, Any] | None = None) -> 
 
     provider = str(values.get("provider") or existing.get("provider") or "mock").strip().lower()
     if provider not in VALID_PROVIDERS:
-        raise ValueError("provider must be mock or openai")
+        raise ValueError("provider must be mock, openai, or comfyui")
 
     steps = normalize_steps(values.get("steps", existing.get("steps")))
     episode_ids = normalize_episode_ids(values.get("episode_ids", existing.get("episode_ids")))

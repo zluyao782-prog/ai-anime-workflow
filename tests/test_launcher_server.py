@@ -32,8 +32,9 @@ class LauncherServerTest(unittest.TestCase):
             headers={"Content-Type": "application/json"},
             method="POST" if body is not None else "GET",
         )
+        opener = request.build_opener(request.ProxyHandler({}))
         try:
-            with request.urlopen(http_request, timeout=3) as response:
+            with opener.open(http_request, timeout=3) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:
             payload = exc.read().decode("utf-8")
@@ -174,6 +175,25 @@ class LauncherServerTest(unittest.TestCase):
                 self.assertTrue(styles["ok"])
                 self.assertEqual([item["style_id"] for item in styles["styles"]], ["dark"])
 
+                status, reference = self.request_json(
+                    server,
+                    "/api/projects/demo/references",
+                    {
+                        "reference_id": "rain_alley",
+                        "reference_type": "location",
+                        "name": "雨夜小巷",
+                        "prompt_fragment": "rainy narrow alley",
+                    },
+                )
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertTrue(reference["ok"])
+                self.assertEqual(reference["reference"]["reference_id"], "rain_alley")
+
+                status, references = self.request_json(server, "/api/projects/demo/references")
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertTrue(references["ok"])
+                self.assertEqual([item["reference_id"] for item in references["references"]], ["rain_alley"])
+
                 status, batch = self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 2})
                 self.assertEqual(status, HTTPStatus.OK)
                 self.assertTrue(batch["ok"])
@@ -183,6 +203,17 @@ class LauncherServerTest(unittest.TestCase):
                 self.assertEqual(status, HTTPStatus.OK)
                 self.assertTrue(episodes["ok"])
                 self.assertEqual([item["episode_id"] for item in episodes["episodes"]], ["episode_001", "episode_002"])
+            finally:
+                self.stop_server(server, thread)
+
+    def test_workflow_templates_api_lists_builtin_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                status, payload = self.request_json(server, "/api/workflow-templates")
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertTrue(payload["ok"])
+                self.assertIn("comfyui_external_anime", [item["template_id"] for item in payload["templates"]])
             finally:
                 self.stop_server(server, thread)
 
@@ -252,6 +283,29 @@ class LauncherServerTest(unittest.TestCase):
                 self.stop_server(server, thread)
                 launcher_server.CONFIG_PATH = previous_config_path
 
+    def test_comfyui_start_is_noop_in_remote_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_config_path = launcher_server.CONFIG_PATH
+            config_path = Path(tmp) / "config/settings.local.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                json.dumps({"comfyui_mode": "remote", "comfyui_remote_base_url": "http://10.0.0.2:8188"}),
+                encoding="utf-8",
+            )
+            launcher_server.CONFIG_PATH = config_path
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                with mock.patch("anime_workflow.launcher.server.ComfyUIService") as service:
+                    status, payload = self.request_json(server, "/api/comfyui/start", {})
+
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(payload["status"], "remote_configured")
+                self.assertEqual(payload["base_url"], "http://10.0.0.2:8188")
+                service.assert_not_called()
+            finally:
+                self.stop_server(server, thread)
+                launcher_server.CONFIG_PATH = previous_config_path
+
     def test_jobs_api_creates_lists_cancels_and_retries_job(self):
         with tempfile.TemporaryDirectory() as tmp:
             runner = NoopRunner()
@@ -301,7 +355,7 @@ class LauncherServerTest(unittest.TestCase):
 
                 self.assertEqual(status, HTTPStatus.BAD_REQUEST)
                 self.assertFalse(payload["ok"])
-                self.assertIn("provider must be mock or openai", payload["error"])
+                self.assertIn("provider must be mock, openai, or comfyui", payload["error"])
             finally:
                 self.stop_server(server, thread)
 
@@ -495,11 +549,21 @@ class LauncherServerTest(unittest.TestCase):
                         "project_id": "demo",
                         "episode_id": "episode_001",
                         "shot_id": "shot_001",
-                        "updates": {"scene": "新的雨夜场景", "dialogue": "新台词"},
+                        "updates": {"scene": "新的雨夜场景", "dialogue": "新台词", "review_status": "revise", "review_note": "镜头需要更紧张"},
                     },
                 )
                 self.assertEqual(status, HTTPStatus.OK)
                 self.assertEqual(updated["storyboard"]["shots"][0]["scene"], "新的雨夜场景")
+                self.assertEqual(updated["storyboard"]["shots"][0]["review_status"], "revise")
+
+                status, snapshotted = self.request_json(
+                    server,
+                    "/api/storyboard/review/snapshot",
+                    {"project_id": "demo", "episode_id": "episode_001", "note": "第一轮审稿"},
+                )
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(snapshotted["storyboard"]["review_versions"][0]["note"], "第一轮审稿")
+                self.assertEqual(snapshotted["storyboard"]["review_versions"][0]["summary"]["revise"], 1)
 
                 status, rewritten = self.request_json(
                     server,
@@ -551,6 +615,79 @@ class LauncherServerTest(unittest.TestCase):
                 self.stop_server(server, thread)
                 launcher_server.STORYBOARD_DIR = previous_storyboard_dir
 
+    def test_storyboard_review_api_regenerates_one_shot_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "示例项目", "default_shot_count": 1})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+                self.request_json(
+                    server,
+                    "/api/storyboard/save",
+                    {"project_id": "demo", "episode_id": "episode_001", "storyboard": sample_review_storyboard()},
+                )
+
+                def fake_generate_shot_image(storyboard, shot_id, provider, source_dir, output_dir, metadata_dir, references=None, workflow_template=""):
+                    updated = dict(storyboard)
+                    updated["shots"] = [dict(shot) for shot in storyboard["shots"]]
+                    updated["shots"][0]["source_image"] = str(Path(tmp) / "source.png")
+                    updated["shots"][0]["anime_image"] = str(Path(tmp) / "anime.png")
+                    updated["shots"][0]["metadata_path"] = str(Path(tmp) / "metadata.json")
+                    return updated
+
+                with mock.patch.object(launcher_server, "generate_shot_image", fake_generate_shot_image):
+                    status, payload = self.request_json(
+                        server,
+                        "/api/storyboard/shot/image",
+                        {"project_id": "demo", "episode_id": "episode_001", "shot_id": "shot_001", "provider": "mock"},
+                    )
+
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["provider"], "mock")
+                self.assertEqual(payload["episode"]["status"], "imaged")
+                self.assertEqual(payload["storyboard"]["shots"][0]["anime_image"], str(Path(tmp) / "anime.png"))
+            finally:
+                self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
+
+    def test_storyboard_review_api_shot_image_openai_requires_confirmation_and_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "示例项目", "default_shot_count": 1})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+                self.request_json(
+                    server,
+                    "/api/storyboard/save",
+                    {"project_id": "demo", "episode_id": "episode_001", "storyboard": sample_review_storyboard()},
+                )
+
+                status, payload = self.request_json(
+                    server,
+                    "/api/storyboard/shot/image",
+                    {"project_id": "demo", "episode_id": "episode_001", "shot_id": "shot_001", "provider": "openai"},
+                )
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("openai provider requires confirmation", payload["error"])
+
+                status, payload = self.request_json(
+                    server,
+                    "/api/storyboard/shot/image",
+                    {"project_id": "demo", "episode_id": "episode_001", "shot_id": "shot_001", "provider": "openai", "confirm_openai": True},
+                )
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("OpenAI API Key is not configured", payload["error"])
+            finally:
+                self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
+
     def test_project_episode_production_endpoints_update_episode_statuses(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_storyboard_dir = launcher_server.STORYBOARD_DIR
@@ -579,7 +716,7 @@ class LauncherServerTest(unittest.TestCase):
                 self.assertEqual(storyboarded["episode"]["status"], "storyboarded")
                 self.assertTrue(Path(storyboarded["storyboard_path"]).exists())
 
-                def fake_generate_episode_images(storyboard, provider, source_dir, output_dir, metadata_dir):
+                def fake_generate_episode_images(storyboard, provider, source_dir, output_dir, metadata_dir, references=None):
                     updated = dict(storyboard)
                     updated["shots"] = [dict(shot) for shot in storyboard["shots"]]
                     updated["shots"][0]["anime_image"] = str(Path(tmp) / "shot_001.png")

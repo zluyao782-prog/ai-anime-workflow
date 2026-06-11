@@ -16,6 +16,10 @@ body {
   margin: 0;
   min-height: 100vh;
   letter-spacing: 0;
+  background: #f3f6f4;
+  color: #111827;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -25,12 +29,26 @@ textarea {
   font: inherit;
 }
 
+::selection {
+  background: rgba(20, 184, 166, 0.22);
+}
+
 @layer components {
   .input {
-    @apply h-10 rounded-ui border border-line bg-slate-50 px-3 text-sm text-ink-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100;
+    @apply h-11 w-full rounded-ui border border-line bg-white px-3 text-sm text-ink-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-teal-500 focus:bg-white focus:ring-4 focus:ring-teal-100;
   }
 
   .button-ghost {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-ui border border-line bg-transparent px-3 text-sm text-ink-900 no-underline outline-none transition hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-blue-500;
+    @apply inline-flex h-11 items-center justify-center gap-2 rounded-ui border border-line bg-white px-3 text-sm font-medium text-ink-900 no-underline shadow-sm outline-none transition hover:border-slate-300 hover:bg-slate-50 focus-visible:ring-4 focus-visible:ring-teal-100;
+  }
+
+  .surface-card {
+    @apply rounded-ui border border-line bg-panel shadow-panel;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
   }
 }

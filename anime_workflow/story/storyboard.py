@@ -52,6 +52,12 @@ def generate_storyboard(values: dict[str, Any]) -> dict[str, Any]:
                 "emotion": emotion,
                 "source_image": "",
                 "anime_image": "",
+                "reference_bindings": [],
+                "workflow_template": "mock_image",
+                "rerun_history": [],
+                "review_status": "pending",
+                "review_note": "",
+                "reviewed_at": "",
             }
         )
 
@@ -67,6 +73,7 @@ def generate_storyboard(values: dict[str, Any]) -> dict[str, Any]:
         "duration_seconds": duration_seconds,
         "shot_count": shot_count,
         "shots": shots,
+        "review_versions": [],
     }
 
 

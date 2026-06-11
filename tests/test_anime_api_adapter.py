@@ -1,13 +1,14 @@
 import json
 import tempfile
 import unittest
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from pathlib import Path
 from unittest.mock import Mock
 
 from anime_workflow.services.anime_api_adapter import (
     AnimeApiRequest,
     AnimeApiAdapter,
+    ComfyUIAnimeProvider,
     HttpAnimeProvider,
     MockAnimeProvider,
     OpenAIImageProvider,
@@ -170,6 +171,69 @@ class AnimeApiAdapterTest(unittest.TestCase):
         provider = OpenAIImageProvider(api_key="secret", endpoint="https://proxy.example.test/custom/images/edits")
 
         self.assertEqual(provider.endpoint, "https://proxy.example.test/custom/images/edits")
+
+    def test_comfyui_provider_submits_external_node_and_writes_base64_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.png"
+            source.write_bytes(b"source-image")
+            reference = root / "reference.png"
+            reference.write_bytes(b"reference-image")
+            client = Mock()
+            client.submit_prompt.return_value = "prompt-1"
+            client.wait_for_history.return_value = {
+                "outputs": {
+                    "1": {
+                        "string": [
+                            json.dumps({"image_base64": b64encode(b"anime-image").decode("ascii")})
+                        ]
+                    }
+                }
+            }
+            provider = ComfyUIAnimeProvider(
+                base_url="http://10.0.0.2:8188",
+                api_endpoint="mock",
+                provider_name="mock",
+                model_version="mock-v1",
+                workflow_template={
+                    "comfyui": {
+                        "node_id": "42",
+                        "class_type": "ExternalAnimeStylize",
+                        "inputs": {
+                            "source_image_base64": "{{source_image_base64}}",
+                            "reference_image_base64": "{{reference_image_base64}}",
+                            "output_path": "{{remote_output_path}}",
+                            "prompt": "{{prompt}}",
+                            "return_image_base64": "{{return_image_base64}}",
+                        },
+                    }
+                },
+                client=client,
+            )
+            output = root / "anime.png"
+
+            provider.stylize(
+                AnimeApiRequest(
+                    project_id="demo",
+                    episode_id="episode_001",
+                    shot_id="shot_001",
+                    source_image=source,
+                    style_preset="clean",
+                    prompt="rainy alley",
+                    reference_images=(reference,),
+                ),
+                output,
+            )
+
+            self.assertEqual(output.read_bytes(), b"anime-image")
+            workflow = client.submit_prompt.call_args.args[0]
+            inputs = workflow["42"]["inputs"]
+            self.assertEqual(workflow["42"]["class_type"], "ExternalAnimeStylize")
+            self.assertEqual(b64decode(inputs["source_image_base64"]), b"source-image")
+            self.assertEqual(b64decode(inputs["reference_image_base64"]), b"reference-image")
+            self.assertEqual(inputs["prompt"], "rainy alley")
+            self.assertEqual(inputs["return_image_base64"], "true")
+            client.wait_for_history.assert_called_once_with("prompt-1", timeout_seconds=180)
 
 
 if __name__ == "__main__":

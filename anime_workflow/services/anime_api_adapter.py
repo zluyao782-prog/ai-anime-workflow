@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib import request as urllib_request
 
+from anime_workflow.services.comfyui_client import ComfyUIClient, extract_output_value
+
 
 @dataclass(frozen=True)
 class AnimeApiRequest:
@@ -22,6 +24,7 @@ class AnimeApiRequest:
     style_preset: str
     prompt: str = ""
     character_reference: Path | None = None
+    reference_images: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -186,6 +189,117 @@ class OpenAIImageProvider:
         return f"{clean}{cls.DEFAULT_ENDPOINT_PATH}"
 
 
+class ComfyUIAnimeProvider:
+    name = "comfyui"
+    model_version = "external-anime-stylize-v1"
+
+    def __init__(
+        self,
+        base_url: str,
+        api_endpoint: str = "mock",
+        api_key: str = "",
+        provider_name: str = "mock",
+        model_version: str = "mock-v1",
+        workflow_template: dict[str, Any] | None = None,
+        timeout_seconds: int = 180,
+        client: ComfyUIClient | None = None,
+    ) -> None:
+        self.base_url = base_url
+        self.api_endpoint = api_endpoint
+        self.api_key = api_key
+        self.external_provider_name = provider_name
+        self.external_model_version = model_version
+        self.workflow_template = workflow_template or {}
+        self.model_version = f"comfyui:{provider_name}:{model_version}"
+        self.timeout_seconds = timeout_seconds
+        self.client = client or ComfyUIClient(base_url=base_url)
+
+    def stylize(self, request: AnimeApiRequest, output_image: Path) -> None:
+        workflow = self._workflow(request, output_image)
+        prompt_id = self.client.submit_prompt(workflow)
+        history = self.client.wait_for_history(prompt_id, timeout_seconds=self.timeout_seconds)
+        value = extract_output_value(history)
+        image_bytes = self._image_bytes(value)
+        output_image.parent.mkdir(parents=True, exist_ok=True)
+        output_image.write_bytes(image_bytes)
+
+    def _workflow(self, request: AnimeApiRequest, output_image: Path) -> dict[str, Any]:
+        remote_output = f"ai_anime_workflow_outputs/{request.project_id}/{request.episode_id}/{output_image.name}"
+        comfyui = self.workflow_template.get("comfyui") if isinstance(self.workflow_template, dict) else None
+        if isinstance(comfyui, dict):
+            node_id = str(comfyui.get("node_id") or "1")
+            class_type = str(comfyui.get("class_type") or "ExternalAnimeStylize")
+            raw_inputs = comfyui.get("inputs") if isinstance(comfyui.get("inputs"), dict) else {}
+            values = self._workflow_values(request, output_image, remote_output)
+            inputs = {str(key): self._resolve_template_value(value, values) for key, value in raw_inputs.items()}
+            return {node_id: {"class_type": class_type, "inputs": inputs}}
+        return {
+            "1": {
+                "class_type": "ExternalAnimeStylize",
+                "inputs": self._workflow_values(request, output_image, remote_output),
+            }
+        }
+
+    def _workflow_values(self, request: AnimeApiRequest, output_image: Path, remote_output: str) -> dict[str, str]:
+        return {
+            "source_image_path": "",
+            "source_image_base64": b64encode(Path(request.source_image).read_bytes()).decode("ascii"),
+            "reference_image_base64": self._reference_image_base64(request),
+            "output_path": remote_output,
+            "remote_output_path": remote_output,
+            "style_preset": request.style_preset,
+            "prompt": request.prompt,
+            "api_endpoint": self.api_endpoint,
+            "api_key": self.api_key,
+            "provider_name": self.external_provider_name,
+            "model_version": self.external_model_version,
+            "return_image_base64": "true",
+            "local_output_path": str(output_image),
+        }
+
+    @staticmethod
+    def _resolve_template_value(value: Any, values: dict[str, str]) -> Any:
+        if not isinstance(value, str):
+            return value
+        result = value
+        for key, replacement in values.items():
+            result = result.replace(f"{{{{{key}}}}}", replacement)
+        return result
+
+    @staticmethod
+    def _reference_image_base64(request: AnimeApiRequest) -> str:
+        images = list(request.reference_images)
+        if request.character_reference:
+            images.insert(0, request.character_reference)
+        for image in images:
+            path = Path(image)
+            if path.exists():
+                return b64encode(path.read_bytes()).decode("ascii")
+        return ""
+
+    def _image_bytes(self, value: str) -> bytes:
+        clean = value.strip()
+        try:
+            payload = json.loads(clean)
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict):
+            if payload.get("image_base64"):
+                return b64decode(str(payload["image_base64"]))
+            if payload.get("filename"):
+                return self.client.view_image(
+                    str(payload.get("filename") or ""),
+                    subfolder=str(payload.get("subfolder") or ""),
+                    image_type=str(payload.get("type") or "output"),
+                )
+        if clean.startswith("data:") and "," in clean:
+            return b64decode(clean.split(",", 1)[1])
+        path = Path(clean)
+        if path.exists():
+            return path.read_bytes()
+        raise ValueError("ComfyUI output did not include image data")
+
+
 class AnimeApiAdapter:
     def __init__(
         self,
@@ -220,6 +334,7 @@ class AnimeApiAdapter:
         payload = {
             "source_hash": self._sha256(Path(request.source_image)),
             "character_reference_hash": self._sha256(request.character_reference) if request.character_reference else "",
+            "reference_image_hashes": [self._sha256(path) for path in request.reference_images if Path(path).exists()],
             "style_preset": request.style_preset,
             "prompt": request.prompt,
             "provider": self.provider.name,
@@ -245,6 +360,7 @@ class AnimeApiAdapter:
             "source_image": str(Path(request.source_image)),
             "source_hash": self._sha256(Path(request.source_image)),
             "character_reference": str(request.character_reference) if request.character_reference else "",
+            "reference_images": [str(path) for path in request.reference_images],
             "style_preset": request.style_preset,
             "prompt": request.prompt,
             "output_image": str(output_image),

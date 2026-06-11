@@ -144,12 +144,21 @@ class JobQueueStoreTest(unittest.TestCase):
                 store.create_job({"project_id": "", "episode_ids": ["episode_001"], "steps": ["storyboard"], "provider": "mock"})
             with self.assertRaisesRegex(ValueError, "episode_ids is required"):
                 store.create_job({"project_id": "demo", "episode_ids": [], "steps": ["storyboard"], "provider": "mock"})
-            with self.assertRaisesRegex(ValueError, "provider must be mock or openai"):
+            with self.assertRaisesRegex(ValueError, "provider must be mock, openai, or comfyui"):
                 store.create_job({"project_id": "demo", "episode_ids": ["episode_001"], "steps": ["storyboard"], "provider": "bad"})
             with self.assertRaisesRegex(ValueError, "invalid step"):
                 store.create_job({"project_id": "demo", "episode_ids": ["episode_001"], "steps": ["bad"], "provider": "mock"})
             with self.assertRaisesRegex(ValueError, "openai provider requires confirmation"):
                 store.create_job({"project_id": "demo", "episode_ids": ["episode_001"], "steps": ["storyboard"], "provider": "openai"})
+
+    def test_create_job_accepts_comfyui_provider_without_openai_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(Path(tmp) / "jobs")
+
+            job = store.create_job({"project_id": "demo", "episode_ids": ["episode_001"], "steps": ["images"], "provider": "comfyui"})
+
+            self.assertEqual(job["provider"], "comfyui")
+            self.assertEqual(job["steps"], ["images"])
 
     def test_openai_job_requires_confirmation_for_create_and_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -372,6 +381,32 @@ class JobRunnerTest(unittest.TestCase):
             stored = store.get_job(job["job_id"])
             self.assertEqual(stored["items"][0]["status"], "failed")
             self.assertIn("OpenAI API Key is not configured", stored["items"][0]["error"])
+
+    def test_runner_builds_comfyui_provider_from_remote_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = JobRunner(
+                job_store=JobStore(root / "jobs"),
+                project_store=build_project_store(root),
+                storyboard_dir=root / "storyboards",
+                source_dir=root / "source",
+                image_dir=root / "images",
+                metadata_dir=root / "metadata",
+                output_dir=root / "exports",
+                config_loader=lambda: {
+                    "comfyui_mode": "remote",
+                    "comfyui_remote_base_url": "http://10.0.0.2:8188",
+                    "openai_api_key": "sk-test",
+                    "openai_base_url": "https://api.example.test",
+                    "openai_image_model": "gpt-image-2",
+                },
+            )
+
+            provider = runner._provider("comfyui")
+
+            self.assertEqual(provider.name, "comfyui")
+            self.assertEqual(provider.base_url, "http://10.0.0.2:8188")
+            self.assertEqual(provider.api_endpoint, "https://api.example.test/v1/images/edits")
 
     def test_cancel_requested_before_run_marks_cancelled(self):
         with tempfile.TemporaryDirectory() as tmp:

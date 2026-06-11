@@ -96,6 +96,29 @@ class ProjectLibraryTest(unittest.TestCase):
             self.assertEqual(store.list_characters("demo")[0]["name"], "林夏")
             self.assertEqual(store.list_styles("demo")[0]["name"], "暗色悬疑")
 
+    def test_create_continuity_reference_under_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProjectStore(Path(tmp) / "projects")
+            store.save_project({"project_id": "demo", "name": "示例项目"})
+
+            reference = store.save_reference(
+                "demo",
+                {
+                    "reference_id": "rain_alley",
+                    "reference_type": "location",
+                    "name": "雨夜小巷",
+                    "prompt_fragment": "rainy narrow alley, wet reflective pavement",
+                    "reference_image": "/refs/alley.png",
+                },
+            )
+
+            self.assertEqual(reference["reference_id"], "rain_alley")
+            self.assertEqual(reference["reference_type"], "location")
+            self.assertEqual(store.list_references("demo")[0]["prompt_fragment"], "rainy narrow alley, wet reflective pavement")
+
+            with self.assertRaisesRegex(ValueError, "reference_type"):
+                store.save_reference("demo", {"reference_type": "bad", "name": "坏素材"})
+
     def test_create_batch_episodes_uses_project_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ProjectStore(Path(tmp) / "projects")

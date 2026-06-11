@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from anime_workflow.projects.models import character_from, clamp_int, now_iso, project_from, slug, style_from, value_from
+from anime_workflow.projects.models import character_from, clamp_int, now_iso, project_from, reference_from, slug, style_from, value_from
 
 
 def load_json_object(path: Path, label: str) -> dict[str, Any]:
@@ -87,6 +87,21 @@ class ProjectStore:
     def list_styles(self, project_id: str) -> list[dict[str, Any]]:
         self.get_project(project_id)
         return self._list_collection(project_id, "styles")
+
+    def save_reference(self, project_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        self.get_project(project_id)
+        reference_id = slug(values.get("reference_id") or values.get("name"), "reference")
+        path = self._json_path(project_id, "references", reference_id)
+        existing = load_json_object(path, "reference") if path.exists() else None
+        reference = reference_from(project_id, values, existing)
+        path = self._json_path(project_id, "references", reference["reference_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(reference, ensure_ascii=False, indent=2), encoding="utf-8")
+        return reference
+
+    def list_references(self, project_id: str) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        return self._list_collection(project_id, "references")
 
     def save_episode(self, project_id: str, values: dict[str, Any]) -> dict[str, Any]:
         project = self.get_project(project_id)

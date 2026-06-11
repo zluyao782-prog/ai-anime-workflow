@@ -16,17 +16,18 @@ from urllib.parse import unquote
 
 from anime_workflow.imports.adaptation import build_episode_drafts, build_import_record, clean_source_text, split_short_video_episodes
 from anime_workflow.imports.document_reader import extract_document_text
-from anime_workflow.launcher.config import LauncherConfigStore
+from anime_workflow.launcher.config import LauncherConfigStore, effective_comfyui_base_url
 from anime_workflow.launcher.services import ComfyUIService, PROJECT_ROOT, environment_status, tail_file
 from anime_workflow.jobs.runner import JobRunner
 from anime_workflow.jobs.store import JobStore
 from anime_workflow.projects.models import clamp_int, slug as project_slug
 from anime_workflow.projects.store import ProjectStore
-from anime_workflow.services.anime_api_adapter import MockAnimeProvider, OpenAIImageProvider
-from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images
+from anime_workflow.services.anime_api_adapter import ComfyUIAnimeProvider, MockAnimeProvider, OpenAIImageProvider
+from anime_workflow.services.workflow_templates import list_workflow_templates, workflow_template_by_id
+from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images, generate_shot_image
 from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard, storyboard_path
 from anime_workflow.story.providers import storyboard_provider_from_config
-from anime_workflow.story.review import rewrite_storyboard_shot_local, update_storyboard_shot, validate_storyboard_for_review
+from anime_workflow.story.review import rewrite_storyboard_shot_local, snapshot_storyboard_review, update_storyboard_shot, validate_storyboard_for_review
 
 
 CONFIG_PATH = PROJECT_ROOT / "config/settings.local.json"
@@ -85,6 +86,9 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/jobs":
             self._handle_job_list()
             return
+        if parsed.path == "/api/workflow-templates":
+            self._json({"ok": True, "templates": list_workflow_templates()})
+            return
         if parsed.path.startswith("/api/jobs/"):
             self._handle_job_get(parsed.path)
             return
@@ -108,9 +112,17 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             self._json({"config": self.config_store.load_public()})
             return
         if parsed.path == "/api/comfyui/start":
+            config = self.config_store.load()
+            if str(config.get("comfyui_mode") or "local") == "remote":
+                self._json({"status": "remote_configured", "base_url": effective_comfyui_base_url(config)})
+                return
             self._json(ComfyUIService().start())
             return
         if parsed.path == "/api/comfyui/stop":
+            config = self.config_store.load()
+            if str(config.get("comfyui_mode") or "local") == "remote":
+                self._json({"status": "remote_configured", "base_url": effective_comfyui_base_url(config)})
+                return
             self._json(ComfyUIService().stop())
             return
         if parsed.path == "/api/openai/test":
@@ -137,11 +149,17 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/storyboard/save":
             self._handle_storyboard_save()
             return
+        if parsed.path == "/api/storyboard/review/snapshot":
+            self._handle_storyboard_review_snapshot()
+            return
         if parsed.path == "/api/storyboard/shot/update":
             self._handle_storyboard_shot_update()
             return
         if parsed.path == "/api/storyboard/shot/rewrite":
             self._handle_storyboard_shot_rewrite()
+            return
+        if parsed.path == "/api/storyboard/shot/image":
+            self._handle_storyboard_shot_image()
             return
         if parsed.path.startswith("/api/projects/"):
             self._handle_project_post(parsed.path)
@@ -234,23 +252,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             body = self._read_json()
             path = storyboard_path(STORYBOARD_DIR, body.get("project_id", ""), body.get("episode_id", ""))
             storyboard = load_storyboard(path)
-            config = self.config_store.load()
-            provider_name = str(body.get("provider") or "mock").lower()
-            if provider_name == "openai":
-                if body.get("confirm_openai") is not True:
-                    self._json({"ok": False, "error": "openai provider requires confirmation"}, HTTPStatus.BAD_REQUEST)
-                    return
-                api_key = config.get("openai_api_key", "")
-                if not api_key:
-                    self._json({"ok": False, "error": "OpenAI API Key is not configured"}, HTTPStatus.BAD_REQUEST)
-                    return
-                provider = OpenAIImageProvider(
-                    api_key=api_key,
-                    model=config.get("openai_image_model", "gpt-image-2"),
-                    endpoint=config.get("openai_base_url", "https://aigate.zhixingjidian.cn"),
-                )
-            else:
-                provider = MockAnimeProvider()
+            provider = self._image_provider_from_body(body)
 
             updated = generate_episode_images(
                 storyboard=storyboard,
@@ -366,6 +368,9 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             if suffix == "styles":
                 self._json({"ok": True, "styles": self.project_store.list_styles(project_id)})
                 return
+            if suffix == "references":
+                self._json({"ok": True, "references": self.project_store.list_references(project_id)})
+                return
             if suffix == "episodes":
                 self._json({"ok": True, "episodes": self.project_store.list_episodes(project_id)})
                 return
@@ -412,6 +417,9 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 return
             if suffix == "styles":
                 self._json({"ok": True, "style": self.project_store.save_style(project_id, body)})
+                return
+            if suffix == "references":
+                self._json({"ok": True, "reference": self.project_store.save_reference(project_id, body)})
                 return
             if suffix == "episodes/batch":
                 self._json({"ok": True, "episodes": self.project_store.create_episode_batch(project_id, body)})
@@ -492,6 +500,25 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
         except FileNotFoundError as exc:
             self._json_error(exc, HTTPStatus.NOT_FOUND)
 
+    def _handle_storyboard_review_snapshot(self) -> None:
+        try:
+            body = self._read_json()
+            project_id = str(body.get("project_id") or "").strip()
+            episode_id = str(body.get("episode_id") or "").strip()
+            path = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
+            storyboard = snapshot_storyboard_review(load_storyboard(path), str(body.get("note") or ""))
+            saved = save_storyboard(storyboard, STORYBOARD_DIR)
+            episode = self.project_store.update_episode(
+                project_id,
+                episode_id,
+                {"status": "storyboarded", "storyboard_path": str(saved), "error": ""},
+            )
+            self._json({"ok": True, "storyboard": storyboard, "episode": episode, "storyboard_path": str(saved)})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
     def _handle_storyboard_shot_rewrite(self) -> None:
         try:
             body = self._read_json()
@@ -509,6 +536,37 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             saved = save_storyboard(storyboard, STORYBOARD_DIR)
             self.project_store.update_episode(project_id, episode_id, {"status": "storyboarded", "storyboard_path": str(saved), "error": ""})
             self._json({"ok": True, "storyboard": storyboard, "storyboard_path": str(saved)})
+        except ValueError as exc:
+            self._json_error(exc, HTTPStatus.BAD_REQUEST)
+        except FileNotFoundError as exc:
+            self._json_error(exc, HTTPStatus.NOT_FOUND)
+
+    def _handle_storyboard_shot_image(self) -> None:
+        try:
+            body = self._read_json()
+            project_id = str(body.get("project_id") or "").strip()
+            episode_id = str(body.get("episode_id") or "").strip()
+            shot_id = str(body.get("shot_id") or "").strip()
+            path = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
+            template = workflow_template_by_id(str(body.get("workflow_template") or "mock_image"))
+            provider = self._image_provider_from_body(body)
+            storyboard = generate_shot_image(
+                storyboard=load_storyboard(path),
+                shot_id=shot_id,
+                provider=provider,
+                source_dir=SOURCE_FRAME_DIR,
+                output_dir=ANIME_FRAME_DIR,
+                metadata_dir=API_METADATA_DIR,
+                references=self.project_store.list_references(project_id),
+                workflow_template=template["template_id"],
+            )
+            saved = save_storyboard(storyboard, STORYBOARD_DIR)
+            episode = self.project_store.update_episode(
+                project_id,
+                episode_id,
+                {"status": "imaged", "storyboard_path": str(saved), "error": ""},
+            )
+            self._json({"ok": True, "storyboard": storyboard, "episode": episode, "storyboard_path": str(saved), "provider": provider.name})
         except ValueError as exc:
             self._json_error(exc, HTTPStatus.BAD_REQUEST)
         except FileNotFoundError as exc:
@@ -606,30 +664,15 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
     def _handle_project_episode_images(self, project_id: str, episode_id: str, body: dict[str, Any]) -> None:
         storyboard_file = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
         storyboard = load_storyboard(storyboard_file)
-        config = self.config_store.load()
-        provider_name = str(body.get("provider") or "mock").lower()
-        if provider_name == "openai":
-            if body.get("confirm_openai") is not True:
-                self._json({"ok": False, "error": "openai provider requires confirmation"}, HTTPStatus.BAD_REQUEST)
-                return
-            api_key = config.get("openai_api_key", "")
-            if not api_key:
-                self._json({"ok": False, "error": "OpenAI API Key is not configured"}, HTTPStatus.BAD_REQUEST)
-                return
-            provider = OpenAIImageProvider(
-                api_key=api_key,
-                model=config.get("openai_image_model", "gpt-image-2"),
-                endpoint=config.get("openai_base_url", "https://aigate.zhixingjidian.cn"),
-            )
-        else:
-            provider = MockAnimeProvider()
+        provider = self._image_provider_from_body(body)
 
         updated = generate_episode_images(
             storyboard=storyboard,
             provider=provider,
-            source_dir=PROJECT_ROOT / "data/assets/source_frames",
-            output_dir=PROJECT_ROOT / "data/assets/anime_frames",
-            metadata_dir=PROJECT_ROOT / "data/assets/api_metadata",
+            source_dir=SOURCE_FRAME_DIR,
+            output_dir=ANIME_FRAME_DIR,
+            metadata_dir=API_METADATA_DIR,
+            references=self.project_store.list_references(project_id),
         )
         saved = save_storyboard(updated, STORYBOARD_DIR)
         episode = self.project_store.update_episode(
@@ -638,6 +681,40 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             {"status": "imaged", "storyboard_path": str(saved), "error": ""},
         )
         self._json({"ok": True, "storyboard": updated, "episode": episode, "storyboard_path": str(saved), "provider": provider.name})
+
+    def _image_provider_from_body(self, body: dict[str, Any]):
+        config = self.config_store.load()
+        provider_name = str(body.get("provider") or "mock").lower()
+        if provider_name == "comfyui":
+            template = workflow_template_by_id(str(body.get("workflow_template") or "comfyui_external_anime"))
+            return self._comfyui_image_provider(config, template)
+        if provider_name == "openai":
+            if body.get("confirm_openai") is not True:
+                raise ValueError("openai provider requires confirmation")
+            api_key = config.get("openai_api_key", "")
+            if not api_key:
+                raise ValueError("OpenAI API Key is not configured")
+            return OpenAIImageProvider(
+                api_key=api_key,
+                model=config.get("openai_image_model", "gpt-image-2"),
+                endpoint=config.get("openai_base_url", "https://aigate.zhixingjidian.cn"),
+            )
+        return MockAnimeProvider()
+
+    def _comfyui_image_provider(self, config: dict[str, Any], template: dict[str, Any]) -> ComfyUIAnimeProvider:
+        api_key = str(config.get("openai_api_key") or "")
+        external_provider = "openai" if api_key else "mock"
+        endpoint = str(config.get("openai_base_url") or "mock")
+        if external_provider == "openai" and not endpoint.rstrip("/").endswith("/images/edits"):
+            endpoint = f"{endpoint.rstrip('/')}/v1/images/edits"
+        return ComfyUIAnimeProvider(
+            base_url=effective_comfyui_base_url(config),
+            api_endpoint=endpoint if external_provider == "openai" else "mock",
+            api_key=api_key,
+            provider_name=external_provider,
+            model_version=str(config.get("openai_image_model") or "gpt-image-2"),
+            workflow_template=template,
+        )
 
     def _handle_project_episode_video(self, project_id: str, episode_id: str) -> None:
         storyboard = load_storyboard(storyboard_path(STORYBOARD_DIR, project_id, episode_id))

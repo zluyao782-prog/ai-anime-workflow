@@ -7,7 +7,9 @@ from typing import Any, Callable
 from anime_workflow.jobs.models import now_iso
 from anime_workflow.jobs.store import JobStore
 from anime_workflow.projects.store import ProjectStore
-from anime_workflow.services.anime_api_adapter import MockAnimeProvider, OpenAIImageProvider
+from anime_workflow.launcher.config import effective_comfyui_base_url
+from anime_workflow.services.anime_api_adapter import ComfyUIAnimeProvider, MockAnimeProvider, OpenAIImageProvider
+from anime_workflow.services.workflow_templates import workflow_template_by_id
 from anime_workflow.story.episode_runner import export_episode_video, generate_episode_images
 from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard, storyboard_path
 
@@ -155,6 +157,21 @@ class JobRunner:
         raise ValueError(f"invalid step: {step}")
 
     def _provider(self, provider_name: str):
+        if provider_name == "comfyui":
+            config = self.config_loader()
+            api_key = str(config.get("openai_api_key") or "")
+            external_provider = "openai" if api_key else "mock"
+            endpoint = str(config.get("openai_base_url") or "mock")
+            if external_provider == "openai" and not endpoint.rstrip("/").endswith("/images/edits"):
+                endpoint = f"{endpoint.rstrip('/')}/v1/images/edits"
+            return ComfyUIAnimeProvider(
+                base_url=effective_comfyui_base_url(config),
+                api_endpoint=endpoint if external_provider == "openai" else "mock",
+                api_key=api_key,
+                provider_name=external_provider,
+                model_version=str(config.get("openai_image_model") or "gpt-image-2"),
+                workflow_template=workflow_template_by_id("comfyui_external_anime"),
+            )
         if provider_name == "openai":
             config = self.config_loader()
             api_key = str(config.get("openai_api_key") or "")

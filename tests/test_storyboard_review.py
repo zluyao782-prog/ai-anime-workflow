@@ -2,6 +2,7 @@ import unittest
 
 from anime_workflow.story.review import (
     rewrite_storyboard_shot_local,
+    snapshot_storyboard_review,
     update_storyboard_shot,
     validate_storyboard_for_review,
 )
@@ -22,13 +23,38 @@ class StoryboardReviewTest(unittest.TestCase):
         updated = update_storyboard_shot(
             storyboard,
             "shot_001",
-            {"scene": "新的雨夜场景", "dialogue": "新台词", "anime_image": "should-not-change.png"},
+            {
+                "scene": "新的雨夜场景",
+                "dialogue": "新台词",
+                "anime_image": "should-not-change.png",
+                "reference_bindings": ["hero", "rain_alley", "hero"],
+                "workflow_template": "comfyui_external_anime",
+                "review_status": "approved",
+                "review_note": "画面和台词通过",
+            },
         )
 
         shot = updated["shots"][0]
         self.assertEqual(shot["scene"], "新的雨夜场景")
         self.assertEqual(shot["dialogue"], "新台词")
         self.assertEqual(shot["anime_image"], "/old.png")
+        self.assertEqual(shot["reference_bindings"], ["hero", "rain_alley"])
+        self.assertEqual(shot["workflow_template"], "comfyui_external_anime")
+        self.assertEqual(shot["review_status"], "approved")
+        self.assertEqual(shot["review_note"], "画面和台词通过")
+        self.assertTrue(shot["reviewed_at"])
+
+    def test_snapshot_storyboard_review_records_summary_and_shots(self):
+        storyboard = update_storyboard_shot(sample_storyboard(), "shot_001", {"review_status": "revise", "review_note": "主角脸不稳定"})
+
+        updated = snapshot_storyboard_review(storyboard, "第一轮审稿")
+
+        self.assertEqual(len(updated["review_versions"]), 1)
+        version = updated["review_versions"][0]
+        self.assertEqual(version["note"], "第一轮审稿")
+        self.assertEqual(version["summary"]["revise"], 1)
+        self.assertEqual(version["summary"]["pending"], 0)
+        self.assertEqual(version["shots"][0]["review_note"], "主角脸不稳定")
 
     def test_update_storyboard_shot_rejects_missing_shot(self):
         with self.assertRaisesRegex(FileNotFoundError, "shot not found"):

@@ -15,6 +15,8 @@ class ExternalAnimeStylize:
         return {
             "required": {
                 "source_image_path": ("STRING", {"default": "data/assets/source_frames/demo.png"}),
+                "source_image_base64": ("STRING", {"default": "", "multiline": True}),
+                "reference_image_base64": ("STRING", {"default": "", "multiline": True}),
                 "output_path": ("STRING", {"default": "data/assets/anime_frames/demo-anime.png"}),
                 "style_preset": ("STRING", {"default": "clean_anime_drama"}),
                 "prompt": ("STRING", {"default": "clean anime drama style", "multiline": True}),
@@ -22,6 +24,7 @@ class ExternalAnimeStylize:
                 "api_key": ("STRING", {"default": ""}),
                 "provider_name": ("STRING", {"default": "openai"}),
                 "model_version": ("STRING", {"default": "gpt-image-2"}),
+                "return_image_base64": ("STRING", {"default": "false"}),
             }
         }
 
@@ -34,6 +37,8 @@ class ExternalAnimeStylize:
     def stylize(
         self,
         source_image_path: str,
+        source_image_base64: str,
+        reference_image_base64: str,
         output_path: str,
         style_preset: str,
         prompt: str,
@@ -41,8 +46,11 @@ class ExternalAnimeStylize:
         api_key: str,
         provider_name: str,
         model_version: str,
+        return_image_base64: str,
     ):
-        source = Path(source_image_path)
+        output = Path(output_path)
+        source = self._source_path(source_image_path, source_image_base64, output)
+        reference = self._optional_reference_path(reference_image_base64, output)
         output = Path(output_path)
         if not source.exists():
             raise FileNotFoundError(f"source image not found: {source}")
@@ -50,11 +58,12 @@ class ExternalAnimeStylize:
 
         if api_endpoint == "mock":
             shutil.copyfile(source, output)
-            return (str(output),)
+            return (self._result_value(output, return_image_base64),)
 
         if provider_name.lower() == "openai":
             body, content_type = self._openai_multipart_body(
                 source=source,
+                reference=reference,
                 model=model_version,
                 prompt=self._openai_prompt(prompt, style_preset),
             )
@@ -70,7 +79,7 @@ class ExternalAnimeStylize:
             with urllib_request.urlopen(http_request) as response:
                 data = json.loads(response.read().decode("utf-8"))
             output.write_bytes(b64decode(data["data"][0]["b64_json"]))
-            return (str(output),)
+            return (self._result_value(output, return_image_base64),)
 
         payload = {
             "image_base64": b64encode(source.read_bytes()).decode("ascii"),
@@ -79,6 +88,8 @@ class ExternalAnimeStylize:
             "provider_name": provider_name,
             "model_version": model_version,
         }
+        if reference:
+            payload["character_reference_base64"] = b64encode(reference.read_bytes()).decode("ascii")
         http_request = urllib_request.Request(
             api_endpoint,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -91,7 +102,43 @@ class ExternalAnimeStylize:
         with urllib_request.urlopen(http_request) as response:
             data = json.loads(response.read().decode("utf-8"))
         output.write_bytes(b64decode(data["image_base64"]))
-        return (str(output),)
+        return (self._result_value(output, return_image_base64),)
+
+    @staticmethod
+    def _source_path(source_image_path: str, source_image_base64: str, output: Path) -> Path:
+        encoded = str(source_image_base64 or "").strip()
+        if not encoded:
+            return Path(source_image_path)
+        if "," in encoded and encoded.split(",", 1)[0].startswith("data:"):
+            encoded = encoded.split(",", 1)[1]
+        source = output.with_name(f"{output.stem}-source.png")
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b64decode(encoded))
+        return source
+
+    @staticmethod
+    def _optional_reference_path(reference_image_base64: str, output: Path) -> Path | None:
+        encoded = str(reference_image_base64 or "").strip()
+        if not encoded:
+            return None
+        if "," in encoded and encoded.split(",", 1)[0].startswith("data:"):
+            encoded = encoded.split(",", 1)[1]
+        reference = output.with_name(f"{output.stem}-reference.png")
+        reference.parent.mkdir(parents=True, exist_ok=True)
+        reference.write_bytes(b64decode(encoded))
+        return reference
+
+    @staticmethod
+    def _result_value(output: Path, return_image_base64: str) -> str:
+        if str(return_image_base64 or "").strip().lower() not in {"1", "true", "yes"}:
+            return str(output)
+        return json.dumps(
+            {
+                "image_base64": b64encode(output.read_bytes()).decode("ascii"),
+                "filename": output.name,
+            },
+            ensure_ascii=False,
+        )
 
     @staticmethod
     def _openai_prompt(prompt: str, style_preset: str) -> str:
@@ -105,7 +152,7 @@ class ExternalAnimeStylize:
         )
 
     @staticmethod
-    def _openai_multipart_body(source: Path, model: str, prompt: str):
+    def _openai_multipart_body(source: Path, reference: Path | None, model: str, prompt: str):
         boundary = f"----comfy-openai-{uuid.uuid4().hex}"
         mime_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
         chunks = [
@@ -122,8 +169,19 @@ class ExternalAnimeStylize:
             f"Content-Type: {mime_type}\r\n\r\n".encode("ascii"),
             source.read_bytes(),
             b"\r\n",
-            f"--{boundary}--\r\n".encode("ascii"),
         ]
+        if reference:
+            reference_mime_type = mimetypes.guess_type(reference.name)[0] or "application/octet-stream"
+            chunks.extend(
+                [
+                    f"--{boundary}\r\n".encode("ascii"),
+                    f'Content-Disposition: form-data; name="character_reference"; filename="{reference.name}"\r\n'.encode("ascii"),
+                    f"Content-Type: {reference_mime_type}\r\n\r\n".encode("ascii"),
+                    reference.read_bytes(),
+                    b"\r\n",
+                ]
+            )
+        chunks.append(f"--{boundary}--\r\n".encode("ascii"))
         return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 

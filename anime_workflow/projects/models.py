@@ -97,3 +97,30 @@ def style_from(project_id: str, values: dict[str, Any], existing: dict[str, Any]
         "created_at": existing.get("created_at") or now_iso(),
         "updated_at": now_iso(),
     }
+
+
+VALID_REFERENCE_TYPES = {"character", "prop", "location", "style", "action"}
+
+
+def reference_from(project_id: str, values: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    existing = existing or {}
+    name_source = values["name"] if "name" in values else existing.get("name", "")
+    name = str(name_source or "").strip()
+    if not name:
+        raise ValueError("reference name is required")
+    reference_type = str(value_from(values, existing, "reference_type", "prop")).strip().lower()
+    if reference_type not in VALID_REFERENCE_TYPES:
+        raise ValueError("reference_type must be character, prop, location, style, or action")
+    reference_id = slug(values.get("reference_id") or existing.get("reference_id") or name, "reference")
+    return {
+        "reference_id": reference_id,
+        "project_id": slug(project_id, "project"),
+        "reference_type": reference_type,
+        "name": name,
+        "description": str(value_from(values, existing, "description", "")),
+        "prompt_fragment": str(value_from(values, existing, "prompt_fragment", "")),
+        "reference_image": str(value_from(values, existing, "reference_image", "")),
+        "notes": str(value_from(values, existing, "notes", "")),
+        "created_at": existing.get("created_at") or now_iso(),
+        "updated_at": now_iso(),
+    }

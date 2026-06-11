@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib import request
+from urllib.parse import urlparse
 
 from anime_workflow.story.storyboard import generate_storyboard
 
@@ -85,8 +86,17 @@ class OpenAICompatibleStoryboardProvider:
             },
             method="POST",
         )
-        with request.urlopen(http_request, timeout=self.timeout) as response:
+        if is_local_url(url):
+            context = request.build_opener(request.ProxyHandler({})).open(http_request, timeout=self.timeout)
+        else:
+            context = request.urlopen(http_request, timeout=self.timeout)
+        with context as response:
             return json.loads(response.read().decode("utf-8"))
+
+
+def is_local_url(url: str) -> bool:
+    hostname = urlparse(url).hostname or ""
+    return hostname == "localhost" or hostname == "127.0.0.1" or hostname.startswith("127.")
 
 
 def storyboard_system_prompt() -> str:

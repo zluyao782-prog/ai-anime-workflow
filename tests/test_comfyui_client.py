@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock
 
-from anime_workflow.services.comfyui_client import ComfyUIClient
+from anime_workflow.services.comfyui_client import ComfyUIClient, extract_output_value
 
 
 class ComfyUIClientTest(unittest.TestCase):
@@ -38,6 +38,16 @@ class ComfyUIClientTest(unittest.TestCase):
         self.assertEqual(history, {"outputs": {}})
         request = opener.call_args.args[0]
         self.assertEqual(request.full_url, "http://127.0.0.1:8188/history/abc123")
+
+    def test_extract_output_value_reads_string_or_image_output(self):
+        string_history = {"outputs": {"1": {"string": ['{"image_base64":"abc"}']}}}
+        image_history = {"outputs": {"2": {"images": [{"filename": "demo.png", "subfolder": "x", "type": "output"}]}}}
+
+        self.assertEqual(extract_output_value(string_history), '{"image_base64":"abc"}')
+        self.assertEqual(
+            json.loads(extract_output_value(image_history)),
+            {"filename": "demo.png", "subfolder": "x", "type": "output"},
+        )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import {
   Bot,
   CheckCircle2,
   Clapperboard,
+  Layers3,
   ExternalLink,
   FileText,
   Image,
@@ -22,6 +23,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   Character,
+  ContinuityReference,
   DocumentAdaptResponse,
   EpisodeStoryboardRequest,
   Job,
@@ -36,24 +38,9 @@ import {
   ScriptResult,
   Storyboard,
   StyleTemplate,
+  WorkflowTemplate,
 } from "./api";
-
-const navItems = [
-  { value: "overview", label: "总览", icon: Activity },
-  { value: "projects", label: "项目库", icon: Clapperboard },
-  { value: "characters", label: "角色库", icon: Bot },
-  { value: "styles", label: "风格模板", icon: Image },
-  { value: "episode-studio", label: "剧集生产", icon: Clapperboard },
-  { value: "document-adapt", label: "文档改编", icon: Upload },
-  { value: "storyboard-review", label: "分镜审稿", icon: FileText },
-  { value: "outputs", label: "成品库", icon: Video },
-  { value: "services", label: "服务启动", icon: Server },
-  { value: "config", label: "API 配置", icon: KeyRound },
-  { value: "image-test", label: "图片测试", icon: Image },
-  { value: "video-test", label: "视频测试", icon: Video },
-] as const;
-
-type TabValue = (typeof navItems)[number]["value"];
+import { navItems, TabValue } from "./navigation";
 
 const defaultConfig: PublicConfig = {
   openai_api_key: "",
@@ -63,7 +50,9 @@ const defaultConfig: PublicConfig = {
   openai_text_model: "gpt-4.1-mini",
   openai_text_endpoint_mode: "chat_completions",
   ollama_text_model: "qwen2.5:0.5b",
+  comfyui_mode: "local",
   comfyui_base_url: "http://127.0.0.1:8188",
+  comfyui_remote_base_url: "",
   output_dir: "data/exports",
 };
 
@@ -112,6 +101,16 @@ const defaultStyleDraft = {
   provider: "mock",
 };
 
+const defaultReferenceDraft = {
+  reference_id: "rain_alley",
+  reference_type: "location" as const,
+  name: "雨夜小巷",
+  description: "湿润反光的狭窄小巷，冷蓝路灯，远处有暖黄色窗光",
+  prompt_fragment: "rainy narrow alley, wet reflective pavement, cool blue streetlight, warm window glow",
+  reference_image: "",
+  notes: "",
+};
+
 const defaultDocumentDraft = {
   filename: "story.txt",
   text: "雨夜主角收到匿名信，发现失踪案和自己有关。",
@@ -138,13 +137,15 @@ export function App() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [loadError, setLoadError] = useState("");
   const [episodeForm, setEpisodeForm] = useState<EpisodeStoryboardRequest>(defaultEpisodeForm);
-  const [episodeProvider, setEpisodeProvider] = useState<"mock" | "openai">("mock");
+  const [episodeProvider, setEpisodeProvider] = useState<JobProvider>("mock");
   const [episode, setEpisode] = useState<Storyboard | null>(null);
   const [episodeLog, setEpisodeLog] = useState("先生成分镜；图片阶段默认使用 mock，不会消耗真实 API。");
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState(defaultProjectDraft.project_id);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [styles, setStyles] = useState<StyleTemplate[]>([]);
+  const [references, setReferences] = useState<ContinuityReference[]>([]);
+  const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([]);
   const [projectEpisodes, setProjectEpisodes] = useState<ProjectEpisode[]>([]);
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -153,6 +154,7 @@ export function App() {
   const [projectDraft, setProjectDraft] = useState(defaultProjectDraft);
   const [characterDraft, setCharacterDraft] = useState(defaultCharacterDraft);
   const [styleDraft, setStyleDraft] = useState(defaultStyleDraft);
+  const [referenceDraft, setReferenceDraft] = useState(defaultReferenceDraft);
   const [batchCount, setBatchCount] = useState(10);
   const [batchDirection, setBatchDirection] = useState("每集一个线索，结尾留下反转");
   const [selectedEpisodeIds, setSelectedEpisodeIds] = useState<string[]>([]);
@@ -166,6 +168,9 @@ export function App() {
   const [reviewStoryboard, setReviewStoryboard] = useState<Storyboard | null>(null);
   const [reviewShotId, setReviewShotId] = useState("");
   const [reviewInstruction, setReviewInstruction] = useState("更悬疑，结尾留钩子");
+  const [reviewImageProvider, setReviewImageProvider] = useState<JobProvider>("mock");
+  const [reviewWorkflowTemplate, setReviewWorkflowTemplate] = useState("mock_image");
+  const [reviewSnapshotNote, setReviewSnapshotNote] = useState("审稿检查点");
   const [reviewLog, setReviewLog] = useState("选择项目和剧集，载入分镜后审稿。");
   const currentProjectIdRef = useRef(currentProjectId);
 
@@ -188,23 +193,27 @@ export function App() {
     if (!projectId) {
       setCharacters([]);
       setStyles([]);
+      setReferences([]);
       setProjectEpisodes([]);
       return;
     }
     if (!projectData.projects.some((project) => project.project_id === projectId)) {
       setCharacters([]);
       setStyles([]);
+      setReferences([]);
       setProjectEpisodes([]);
       return;
     }
-    const [characterData, styleData, episodeData] = await Promise.all([
+    const [characterData, styleData, referenceData, episodeData] = await Promise.all([
       api.listCharacters(projectId).catch(() => ({ characters: [] as Character[] })),
       api.listStyles(projectId).catch(() => ({ styles: [] as StyleTemplate[] })),
+      api.listReferences(projectId).catch(() => ({ references: [] as ContinuityReference[] })),
       api.listProjectEpisodes(projectId).catch(() => ({ episodes: [] as ProjectEpisode[] })),
     ]);
     if (projectId !== currentProjectIdRef.current) return;
     setCharacters(characterData.characters);
     setStyles(styleData.styles);
+    setReferences(referenceData.references);
     setProjectEpisodes(episodeData.episodes);
   };
 
@@ -227,6 +236,7 @@ export function App() {
 
   useEffect(() => {
     Promise.all([refreshStatus(), refreshProjectLibrary(), refreshJobs()]).catch((error: Error) => setLoadError(error.message));
+    api.listWorkflowTemplates().then((data) => setWorkflowTemplates(data.templates)).catch((error: Error) => setNotice(error.message));
   }, []);
 
   useEffect(() => {
@@ -293,6 +303,12 @@ export function App() {
       await refreshLogs();
     });
 
+  const testComfyConnection = () =>
+    runBusy("test-comfy", async () => {
+      await refreshStatus();
+      setNotice("已刷新 ComfyUI 连接状态");
+    });
+
   const saveConfig = (event: FormEvent<HTMLFormElement>) =>
     runBusy("save-config", async () => {
       event.preventDefault();
@@ -303,7 +319,9 @@ export function App() {
         openai_text_model: configDraft.openai_text_model,
         openai_text_endpoint_mode: configDraft.openai_text_endpoint_mode,
         ollama_text_model: configDraft.ollama_text_model,
+        comfyui_mode: configDraft.comfyui_mode,
         comfyui_base_url: configDraft.comfyui_base_url,
+        comfyui_remote_base_url: configDraft.comfyui_remote_base_url,
         output_dir: configDraft.output_dir,
       };
       if (!data.openai_api_key) delete data.openai_api_key;
@@ -431,6 +449,14 @@ export function App() {
       event.preventDefault();
       await api.saveStyle(currentProjectId, styleDraft);
       setNotice("风格模板已保存");
+      await refreshProjectLibrary(currentProjectId);
+    });
+
+  const saveReferenceDraft = (event: FormEvent<HTMLFormElement>) =>
+    runBusy("reference-save", async () => {
+      event.preventDefault();
+      await api.saveReference(currentProjectId, referenceDraft);
+      setNotice("连续性素材已保存");
       await refreshProjectLibrary(currentProjectId);
     });
 
@@ -622,6 +648,7 @@ export function App() {
       const result = await api.getEpisode(currentProjectId, reviewEpisodeId);
       setReviewStoryboard(result.storyboard);
       setReviewShotId(result.storyboard.shots[0]?.shot_id ?? "");
+      setReviewWorkflowTemplate(result.storyboard.shots[0]?.workflow_template ?? "mock_image");
       setReviewLog(`已载入分镜：${result.storyboard_path}`);
     });
 
@@ -631,6 +658,16 @@ export function App() {
       const result = await api.saveStoryboard(currentProjectId, reviewEpisodeId, reviewStoryboard);
       setReviewStoryboard(result.storyboard);
       setReviewLog(`分镜已保存：${result.storyboard_path}`);
+      await refreshProjectLibrary(currentProjectId);
+    });
+
+  const snapshotReviewStoryboard = () =>
+    runBusy("review-snapshot", async () => {
+      if (!reviewStoryboard) throw new Error("请先载入分镜");
+      await api.saveStoryboard(currentProjectId, reviewEpisodeId, reviewStoryboard);
+      const result = await api.snapshotStoryboardReview(currentProjectId, reviewEpisodeId, reviewSnapshotNote);
+      setReviewStoryboard(result.storyboard);
+      setReviewLog(`审稿版本已保存：${result.storyboard.review_versions?.slice(-1)[0]?.version_id ?? ""}`);
       await refreshProjectLibrary(currentProjectId);
     });
 
@@ -648,6 +685,13 @@ export function App() {
     });
   };
 
+  const toggleReviewReferenceBinding = (referenceId: string, checked: boolean) => {
+    if (!reviewShotId) return;
+    const existing = currentReviewShot?.reference_bindings ?? [];
+    const next = checked ? Array.from(new Set([...existing, referenceId])) : existing.filter((item) => item !== referenceId);
+    updateReviewShot(reviewShotId, { reference_bindings: next });
+  };
+
   const rewriteReviewShot = () =>
     runBusy("review-rewrite-shot", async () => {
       if (!reviewStoryboard) throw new Error("请先载入分镜");
@@ -655,6 +699,30 @@ export function App() {
       const result = await api.rewriteStoryboardShot(currentProjectId, reviewEpisodeId, reviewShotId, reviewInstruction, "local");
       setReviewStoryboard(result.storyboard);
       setReviewLog(`已本地重写镜头：${reviewShotId}`);
+    });
+
+  const regenerateReviewShotImage = () =>
+    runBusy("review-regenerate-shot-image", async () => {
+      if (!reviewStoryboard) throw new Error("请先载入分镜");
+      if (!reviewShotId) throw new Error("请选择要生成图片的镜头");
+      if (reviewImageProvider === "openai") {
+        const confirmed = window.confirm("将调用外部图片 API 重新生成当前镜头，可能消耗额度。是否继续？");
+        if (!confirmed) {
+          setNotice("已取消外部图片 API 单镜头生成。");
+          return;
+        }
+      }
+      const result = await api.regenerateStoryboardShotImage(
+        currentProjectId,
+        reviewEpisodeId,
+        reviewShotId,
+        reviewImageProvider,
+        reviewWorkflowTemplate,
+        reviewImageProvider === "openai",
+      );
+      setReviewStoryboard(result.storyboard);
+      setReviewLog(`已重生成镜头图片：${reviewShotId} / ${result.provider ?? reviewImageProvider}`);
+      await refreshProjectLibrary(currentProjectId);
     });
 
   const disk = status?.disk["/mnt/d"];
@@ -665,6 +733,35 @@ export function App() {
   const selectedImageEstimate = projectEpisodes
     .filter((projectEpisode) => selectedEpisodeIds.includes(projectEpisode.episode_id))
     .reduce((sum, projectEpisode) => sum + projectEpisode.shot_count, 0);
+  const currentReviewShot = reviewStoryboard?.shots.find((shot) => shot.shot_id === reviewShotId) ?? null;
+  const activeNavItem = navItems.find((item) => item.value === activeTab) ?? navItems[0];
+  const ActiveIcon = activeNavItem.icon;
+  const runningJobs = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const comfyMode = config.comfyui_mode ?? "local";
+  const comfyEffectiveUrl = comfyMode === "remote" ? config.comfyui_remote_base_url || config.comfyui_base_url : config.comfyui_base_url;
+  const readyEpisodes = projectEpisodes.filter((projectEpisode) => projectEpisode.status === "exported").length;
+  const draftedEpisodes = projectEpisodes.filter((projectEpisode) => Boolean(projectEpisode.storyboard_path)).length;
+  const imagedEpisodes = projectEpisodes.filter((projectEpisode) => projectEpisode.status === "imaged" || projectEpisode.status === "exported").length;
+  const failedEpisodes = projectEpisodes.filter((projectEpisode) => projectEpisode.status === "failed").length;
+  const reviewBoundReferences = currentReviewShot?.reference_bindings?.length ?? 0;
+  const reviewRerunCount = currentReviewShot?.rerun_history?.length ?? 0;
+  const reviewSummary = reviewStoryboard?.shots.reduce(
+    (summary, shot) => {
+      const status = shot.review_status ?? "pending";
+      summary[status] += 1;
+      return summary;
+    },
+    { pending: 0, approved: 0, rejected: 0, revise: 0 },
+  ) ?? { pending: 0, approved: 0, rejected: 0, revise: 0 };
+  const nextAction = !currentProject
+    ? { label: "创建项目", detail: "先建立作品设定、题材和默认风格。", tab: "projects" as TabValue, icon: Clapperboard }
+    : projectEpisodes.length === 0
+      ? { label: "导入文档", detail: "把故事文本拆成剧集草稿和第一版分镜。", tab: "document-adapt" as TabValue, icon: Upload }
+      : draftedEpisodes < projectEpisodes.length
+        ? { label: "生成分镜", detail: "把未完成草稿推进到可审稿状态。", tab: "episode-studio" as TabValue, icon: FileText }
+        : imagedEpisodes < projectEpisodes.length
+          ? { label: "打开审稿", detail: "检查镜头连续性、绑定素材并重跑图片。", tab: "storyboard-review" as TabValue, icon: Layers3 }
+          : { label: "查看成品", detail: "检查导出结果，准备发布或继续批量生产。", tab: "outputs" as TabValue, icon: Video };
 
   if (loadError && !status) {
     return <pre className="m-4 rounded-ui border border-red-200 bg-red-50 p-4 text-sm text-red-700">启动器加载失败：{loadError}</pre>;
@@ -672,63 +769,109 @@ export function App() {
 
   return (
     <Tabs.Root value={activeTab} onValueChange={(value) => setActiveTab(value as TabValue)} className="min-h-screen bg-surface text-ink-900">
-      <div className="grid min-h-screen grid-cols-[248px_minmax(0,1fr)] max-[900px]:grid-cols-1">
-        <aside className="border-r border-line bg-panel px-3.5 py-4 max-[900px]:sticky max-[900px]:top-0 max-[900px]:z-10">
-          <div className="flex items-center gap-2.5 border-b border-line px-1 pb-4">
-            <div className="grid h-9 w-9 place-items-center rounded-ui border border-slate-200 font-mono text-sm font-bold text-blue-600">AI</div>
+      <div className="grid min-h-screen grid-cols-[272px_minmax(0,1fr)] max-[900px]:grid-cols-1">
+        <aside className="sticky top-0 h-screen border-r border-slate-950/10 bg-[#121821] px-3.5 py-4 text-slate-100 max-[900px]:z-30 max-[900px]:h-auto max-[900px]:border-b max-[900px]:border-r-0 max-[900px]:py-3">
+          <div className="flex items-center gap-3 border-b border-white/10 px-1 pb-4">
+            <div className="grid h-10 w-10 place-items-center rounded-ui border border-teal-300/30 bg-teal-400/15 font-mono text-sm font-bold text-teal-200">AI</div>
             <div>
-              <div className="text-sm font-semibold">动漫工作台</div>
-              <div className="font-mono text-[11px] text-ink-500">Local Control</div>
+              <div className="text-sm font-semibold text-white">动漫工作台</div>
+              <div className="font-mono text-[11px] text-slate-400">Local Production Suite</div>
             </div>
           </div>
-          <Tabs.List className="mt-4 grid gap-1" aria-label="主导航">
+          <div className="my-4 rounded-ui border border-white/10 bg-white/[0.04] p-3 max-[900px]:hidden">
+            <div className="text-[11px] font-medium text-slate-400">当前项目</div>
+            <div className="mt-1 truncate text-sm font-semibold text-white">{currentProject?.name ?? "未选择项目"}</div>
+            <div className="mt-1 truncate font-mono text-[11px] text-slate-400">{currentProjectId}</div>
+          </div>
+          <Tabs.List className="grid gap-1 max-[900px]:mt-3 max-[900px]:flex max-[900px]:overflow-x-auto max-[900px]:pb-1" aria-label="主导航">
             {navItems.map((item) => (
               <Tabs.Trigger
                 key={item.value}
                 value={item.value}
-                className="group flex h-9 items-center gap-2 rounded-ui px-2.5 text-left text-sm text-ink-700 outline-none transition hover:bg-blue-50 data-[state=active]:bg-blue-100 data-[state=active]:text-ink-900 focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="group flex h-11 items-center gap-2.5 rounded-ui px-3 text-left text-sm text-slate-300 outline-none transition hover:bg-white/10 hover:text-white data-[state=active]:bg-white data-[state=active]:text-slate-950 focus-visible:ring-4 focus-visible:ring-teal-300/25 max-[900px]:shrink-0"
               >
-                <item.icon className="h-4 w-4" />
+                <item.icon className="h-4 w-4 shrink-0" />
                 {item.label}
               </Tabs.Trigger>
             ))}
           </Tabs.List>
+          <div className="mt-4 grid grid-cols-2 gap-2 border-t border-white/10 pt-4 text-[11px] max-[900px]:hidden">
+            <div className="rounded-ui bg-white/[0.04] px-2.5 py-2">
+              <div className="text-slate-400">剧集</div>
+              <div className="mt-1 font-mono text-sm text-white">{projectEpisodes.length}</div>
+            </div>
+            <div className="rounded-ui bg-white/[0.04] px-2.5 py-2">
+              <div className="text-slate-400">任务</div>
+              <div className="mt-1 font-mono text-sm text-white">{runningJobs}</div>
+            </div>
+          </div>
         </aside>
 
-        <main className="px-6 py-6">
-          <header className="mb-5 flex items-start justify-between gap-6 max-[760px]:grid">
-            <div>
-              <h1 className="text-2xl font-semibold leading-tight">本地启动器</h1>
-              <p className="mt-1 text-sm text-ink-500">启动服务、保存 API、检查环境、运行测试工作流。</p>
+        <main className="min-w-0 px-6 pb-8 max-[760px]:px-4">
+          <header className="sticky top-0 z-20 -mx-6 mb-5 border-b border-line bg-surface/95 px-6 py-4 backdrop-blur max-[900px]:top-auto max-[760px]:-mx-4 max-[760px]:px-4">
+            <div className="flex items-start justify-between gap-6 max-[860px]:grid">
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-2 rounded-ui border border-line bg-white px-2.5 py-1 text-xs font-medium text-ink-700 shadow-sm">
+                  <ActiveIcon className="h-3.5 w-3.5 text-teal-600" />
+                  {activeNavItem.label}
+                </div>
+                <h1 className="mt-2 text-balance text-2xl font-semibold leading-tight text-ink-900">把短剧从分镜推进到可发布成片</h1>
+                <p className="mt-1 text-sm text-ink-500">项目、素材、分镜、任务和导出集中在一个本地工作台。</p>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2 max-[860px]:justify-start">
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    runBusy("refresh", async () => {
+                      await Promise.all([refreshStatus(), refreshProjectLibrary(currentProjectId)]);
+                    })
+                  }
+                  busy={busyAction === "refresh"}
+                  icon={RefreshCw}
+                >
+                  刷新状态
+                </Button>
+                <Button onClick={startComfy} busy={busyAction === "start-comfy"} icon={Play}>
+                  启动 ComfyUI
+                </Button>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="secondary"
-                onClick={() =>
-                  runBusy("refresh", async () => {
-                    await Promise.all([refreshStatus(), refreshProjectLibrary(currentProjectId)]);
-                  })
-                }
-                busy={busyAction === "refresh"}
-                icon={RefreshCw}
-              >
-                刷新状态
-              </Button>
-              <Button onClick={startComfy} busy={busyAction === "start-comfy"} icon={Play}>
-                启动 ComfyUI
-              </Button>
+            <div className="mt-4 grid grid-cols-4 gap-2 max-[1100px]:grid-cols-2 max-[560px]:grid-cols-1">
+              <HeaderMetric label="项目" value={String(projects.length)} />
+              <HeaderMetric label="本项目剧集" value={String(projectEpisodes.length)} />
+              <HeaderMetric label="连续性素材" value={String(references.length)} />
+              <HeaderMetric label="运行中任务" value={String(runningJobs)} />
             </div>
           </header>
 
-          {notice && <div className="mb-3 rounded-ui border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{notice}</div>}
+          {notice && <div className="mb-3 rounded-ui border border-teal-200 bg-teal-50 px-3 py-2 text-sm text-teal-900 shadow-sm">{notice}</div>}
 
           <Tabs.Content value="overview">
-            <section className="grid grid-cols-4 gap-3 max-[1100px]:grid-cols-2 max-[640px]:grid-cols-1">
+            <section className="grid grid-cols-[1.35fr_0.65fr] gap-4 max-[1020px]:grid-cols-1">
+              <ProductionCommand
+                projectName={currentProject?.name ?? "未选择项目"}
+                projectId={currentProjectId}
+                episodeCount={projectEpisodes.length}
+                readyEpisodes={readyEpisodes}
+                runningJobs={runningJobs}
+                failedEpisodes={failedEpisodes}
+                onDocument={() => setActiveTab("document-adapt")}
+                onReview={() => setActiveTab("storyboard-review")}
+                onQueue={() => setActiveTab("episode-studio")}
+              />
+              <NextActionCard
+                label={nextAction.label}
+                detail={nextAction.detail}
+                icon={nextAction.icon}
+                onClick={() => setActiveTab(nextAction.tab)}
+              />
+            </section>
+            <section className="mt-4 grid grid-cols-4 gap-4 max-[1100px]:grid-cols-2 max-[640px]:grid-cols-1">
               {statusCards.map((card) => (
                 <StatusCard key={card.title} {...card} />
               ))}
             </section>
-            <section className="mt-3 grid grid-cols-[1.2fr_0.8fr] gap-3 max-[900px]:grid-cols-1">
+            <section className="mt-4 grid grid-cols-[1.2fr_0.8fr] gap-4 max-[900px]:grid-cols-1">
               <Panel title="安装路径" icon={FileText}>
                 <dl className="grid gap-2 text-xs">
                   {Object.entries(status?.paths ?? {}).map(([key, value]) => (
@@ -748,7 +891,7 @@ export function App() {
           </Tabs.Content>
 
           <Tabs.Content value="projects">
-            <section className="grid grid-cols-[380px_minmax(0,1fr)] gap-3 max-[980px]:grid-cols-1">
+            <section className="grid grid-cols-[380px_minmax(0,1fr)] gap-4 max-[980px]:grid-cols-1">
               <Panel title="项目设置" icon={Clapperboard}>
                 <form onSubmit={saveProjectDraft} className="grid gap-3">
                   <Field label="项目 ID">
@@ -798,8 +941,8 @@ export function App() {
                         key={project.project_id}
                         type="button"
                         className={clsx(
-                          "rounded-ui border bg-white p-3 text-left transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
-                          project.project_id === currentProjectId ? "border-blue-300 bg-blue-50" : "border-line",
+                          "rounded-ui border bg-white p-4 text-left shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:shadow-panel focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-teal-100",
+                          project.project_id === currentProjectId ? "border-teal-300 bg-teal-50" : "border-line",
                         )}
                         onClick={() => selectProject(project)}
                       >
@@ -821,7 +964,7 @@ export function App() {
           </Tabs.Content>
 
           <Tabs.Content value="characters">
-            <section className="grid grid-cols-[380px_minmax(0,1fr)] gap-3 max-[980px]:grid-cols-1">
+            <section className="grid grid-cols-[380px_minmax(0,1fr)] gap-4 max-[980px]:grid-cols-1">
               <Panel title={`角色设定 / ${currentProjectId}`} icon={Bot}>
                 <form onSubmit={saveCharacterDraft} className="grid gap-3">
                   <Field label="角色 ID">
@@ -856,7 +999,7 @@ export function App() {
                 {characters.length ? (
                   <div className="grid gap-2">
                     {characters.map((character) => (
-                      <article key={character.character_id} className="rounded-ui border border-line bg-white p-3">
+                      <article key={character.character_id} className="rounded-ui border border-line bg-white p-4 shadow-sm">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="text-sm font-semibold">{character.name}</div>
                           <span className="font-mono text-xs text-ink-500">{character.character_id}</span>
@@ -876,7 +1019,7 @@ export function App() {
           </Tabs.Content>
 
           <Tabs.Content value="styles">
-            <section className="grid grid-cols-[380px_minmax(0,1fr)] gap-3 max-[980px]:grid-cols-1">
+            <section className="grid grid-cols-[380px_minmax(0,1fr)] gap-4 max-[980px]:grid-cols-1">
               <Panel title={`风格模板 / ${currentProjectId}`} icon={Image}>
                 <form onSubmit={saveStyleDraft} className="grid gap-3">
                   <Field label="模板 ID">
@@ -917,7 +1060,7 @@ export function App() {
                 {styles.length ? (
                   <div className="grid gap-2">
                     {styles.map((style) => (
-                      <article key={style.style_id} className="rounded-ui border border-line bg-white p-3">
+                      <article key={style.style_id} className="rounded-ui border border-line bg-white p-4 shadow-sm">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="text-sm font-semibold">{style.name}</div>
                           <span className="font-mono text-xs text-ink-500">{style.style_id} / {style.aspect_ratio}</span>
@@ -935,7 +1078,7 @@ export function App() {
           </Tabs.Content>
 
           <Tabs.Content value="document-adapt">
-            <section className="grid grid-cols-[420px_minmax(0,1fr)] gap-3 max-[1080px]:grid-cols-1">
+            <section className="grid grid-cols-[420px_minmax(0,1fr)] gap-4 max-[1080px]:grid-cols-1">
               <Panel title="文档导入" icon={Upload}>
                 <div className="grid gap-3">
                   <Field label="源文件">
@@ -1012,11 +1155,11 @@ export function App() {
                   <div className="break-all rounded-ui border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-6 text-ink-700">{documentLog}</div>
                   {documentResult ? (
                     <div className="mt-3 grid gap-2">
-                      <div className="rounded-ui border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                      <div className="rounded-ui border border-teal-100 bg-teal-50 px-3 py-2 text-sm text-teal-900">
                         项目：<span className="font-mono">{documentResult.project.project_id}</span> / 导入：<span className="font-mono">{documentResult.import.import_id}</span>
                       </div>
                       {documentResult.episodes.map((item) => (
-                        <article key={item.episode_id} className="rounded-ui border border-line bg-white p-3">
+                        <article key={item.episode_id} className="rounded-ui border border-line bg-white p-4 shadow-sm">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="text-sm font-semibold">{item.title}</div>
                             <span className="rounded-ui bg-emerald-50 px-2 py-1 text-xs text-emerald-700">{item.status}</span>
@@ -1046,7 +1189,7 @@ export function App() {
           </Tabs.Content>
 
           <Tabs.Content value="storyboard-review">
-            <section className="grid grid-cols-[360px_minmax(0,1fr)] gap-3 max-[1080px]:grid-cols-1">
+            <section className="grid grid-cols-[360px_minmax(0,1fr)] gap-4 max-[1080px]:grid-cols-1">
               <Panel title="审稿选择" icon={FileText}>
                 <div className="grid gap-3">
                   <Field label="项目">
@@ -1079,13 +1222,91 @@ export function App() {
                   <Button type="button" onClick={loadReviewStoryboard} busy={busyAction === "review-load"} icon={RefreshCw} disabled={!currentProjectId || !reviewEpisodeId}>
                     载入分镜
                   </Button>
-                  <div className="break-all rounded-ui border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-6 text-ink-700">{reviewLog}</div>
+                  <div className="break-all rounded-ui border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-6 text-ink-700 shadow-inner">{reviewLog}</div>
+                  <form onSubmit={saveReferenceDraft} className="grid gap-2 rounded-ui border border-line bg-white p-4 shadow-sm">
+                    <div className="text-xs font-semibold text-ink-700">连续性素材</div>
+                    <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-2">
+                      <select className="input" value={referenceDraft.reference_type} onChange={(event) => setReferenceDraft({ ...referenceDraft, reference_type: event.target.value as typeof referenceDraft.reference_type })}>
+                        <option value="character">角色</option>
+                        <option value="prop">道具</option>
+                        <option value="location">地点</option>
+                        <option value="style">风格</option>
+                        <option value="action">动作</option>
+                      </select>
+                      <input className="input" value={referenceDraft.name} onChange={(event) => setReferenceDraft({ ...referenceDraft, name: event.target.value })} />
+                    </div>
+                    <textarea className="input min-h-[64px] resize-y py-2 text-xs leading-5" value={referenceDraft.prompt_fragment} onChange={(event) => setReferenceDraft({ ...referenceDraft, prompt_fragment: event.target.value })} />
+                    <Button type="submit" busy={busyAction === "reference-save"} icon={Save}>
+                      保存素材
+                    </Button>
+                    <div className="grid gap-1">
+                      {references.slice(0, 8).map((reference) => (
+                        <div key={reference.reference_id} className="truncate rounded-ui bg-slate-50 px-2 py-1 text-xs text-ink-700">
+                          {reference.reference_type} / {reference.name}
+                        </div>
+                      ))}
+                    </div>
+                  </form>
                 </div>
               </Panel>
 
               <div className="grid gap-3">
                 {reviewStoryboard ? (
                   <>
+                    <section className="grid grid-cols-4 gap-3 max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
+                      <StatusMetric label="待审" value={`${reviewSummary.pending} 条`} />
+                      <StatusMetric label="通过" value={`${reviewSummary.approved} 条`} />
+                      <StatusMetric label="待修改" value={`${reviewSummary.revise} 条`} />
+                      <StatusMetric label="驳回" value={`${reviewSummary.rejected} 条`} />
+                    </section>
+                    {currentReviewShot && (
+                      <Panel title="当前镜头" icon={Layers3} action={<Button size="sm" type="button" onClick={regenerateReviewShotImage} busy={busyAction === "review-regenerate-shot-image"} icon={Image}>重生成</Button>}>
+                        <div className="grid grid-cols-[minmax(0,1fr)_220px] gap-4 max-[860px]:grid-cols-1">
+                          <div className="grid gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-ui bg-teal-50 px-2 py-1 font-mono text-xs font-semibold text-teal-700">{currentReviewShot.shot_id}</span>
+                              <span className="rounded-ui bg-slate-100 px-2 py-1 text-xs text-ink-600">{currentReviewShot.duration}s</span>
+                              <span className="rounded-ui bg-slate-100 px-2 py-1 text-xs text-ink-600">{currentReviewShot.camera || "未设镜头"}</span>
+                              <span className={clsx("rounded-ui px-2 py-1 text-xs", reviewStatusClass(currentReviewShot.review_status))}>{reviewStatusLabel(currentReviewShot.review_status)}</span>
+                            </div>
+                            <p className="m-0 text-sm leading-6 text-ink-900">{currentReviewShot.scene}</p>
+                            <div className="rounded-ui border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-5 text-ink-600">{currentReviewShot.image_prompt || "未填写图片 Prompt"}</div>
+                            <Field label="审稿批注">
+                              <textarea className="input min-h-[72px] resize-y py-2 leading-6" value={currentReviewShot.review_note || ""} onChange={(event) => updateReviewShot(currentReviewShot.shot_id, { review_note: event.target.value })} />
+                            </Field>
+                            <div className="flex flex-wrap gap-2">
+                              <Button size="sm" type="button" variant="secondary" onClick={() => updateReviewShot(currentReviewShot.shot_id, { review_status: "approved" })} icon={CheckCircle2}>
+                                通过
+                              </Button>
+                              <Button size="sm" type="button" variant="secondary" onClick={() => updateReviewShot(currentReviewShot.shot_id, { review_status: "revise" })} icon={RefreshCw}>
+                                待修改
+                              </Button>
+                              <Button size="sm" type="button" variant="secondary" onClick={() => updateReviewShot(currentReviewShot.shot_id, { review_status: "rejected" })} icon={Square}>
+                                驳回
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="grid content-start gap-2 rounded-ui border border-line bg-slate-50 p-3 text-xs text-ink-600">
+                            <div className="flex items-center justify-between gap-2">
+                              <span>Workflow</span>
+                              <span className="font-mono text-ink-900">{currentReviewShot.workflow_template || "mock_image"}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span>引用</span>
+                              <span className="font-mono text-ink-900">{reviewBoundReferences}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span>重跑</span>
+                              <span className="font-mono text-ink-900">{reviewRerunCount}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span>版本</span>
+                              <span className="font-mono text-ink-900">{reviewStoryboard.review_versions?.length ?? 0}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </Panel>
+                    )}
                     <Panel title="整集信息" icon={Clapperboard} action={<Button size="sm" type="button" onClick={saveReviewStoryboard} busy={busyAction === "review-save"} icon={Save}>保存</Button>}>
                       <div className="grid gap-3">
                         <div className="grid grid-cols-2 gap-2 max-[720px]:grid-cols-1">
@@ -1102,13 +1323,40 @@ export function App() {
                         <Field label="风格 Prompt">
                           <textarea className="input min-h-[72px] resize-y py-2 leading-6" value={reviewStoryboard.style_preset} onChange={(event) => updateReviewStoryboard({ style_preset: event.target.value })} />
                         </Field>
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 max-[720px]:grid-cols-1">
+                          <Field label="版本备注">
+                            <input className="input" value={reviewSnapshotNote} onChange={(event) => setReviewSnapshotNote(event.target.value)} />
+                          </Field>
+                          <Button type="button" variant="secondary" onClick={snapshotReviewStoryboard} busy={busyAction === "review-snapshot"} icon={Save}>
+                            保存版本
+                          </Button>
+                        </div>
+                        {(reviewStoryboard.review_versions ?? []).length > 0 && (
+                          <div className="grid gap-1 rounded-ui bg-slate-50 px-3 py-2 text-xs text-ink-600">
+                            {(reviewStoryboard.review_versions ?? []).slice(-3).map((version) => (
+                              <div key={version.version_id} className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="font-mono">{version.version_id} / {formatTime(version.created_at)}</span>
+                                <span>通过 {version.summary.approved} / 待修改 {version.summary.revise} / 驳回 {version.summary.rejected}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </Panel>
 
                     <Panel title="单镜头重写" icon={RefreshCw}>
                       <div className="grid grid-cols-[180px_minmax(0,1fr)_auto] items-end gap-2 max-[820px]:grid-cols-1">
                         <Field label="镜头">
-                          <select className="input" value={reviewShotId} onChange={(event) => setReviewShotId(event.target.value)}>
+                          <select
+                            className="input"
+                            value={reviewShotId}
+                            onChange={(event) => {
+                              const nextShotId = event.target.value;
+                              setReviewShotId(nextShotId);
+                              const nextShot = reviewStoryboard.shots.find((shot) => shot.shot_id === nextShotId);
+                              setReviewWorkflowTemplate(nextShot?.workflow_template ?? "mock_image");
+                            }}
+                          >
                             {reviewStoryboard.shots.map((shot) => (
                               <option key={shot.shot_id} value={shot.shot_id}>
                                 {shot.shot_id}
@@ -1123,15 +1371,70 @@ export function App() {
                           本地重写
                         </Button>
                       </div>
+                      <div className="mt-3 grid grid-cols-[180px_auto] items-end gap-2 max-[520px]:grid-cols-1">
+                        <Field label="图片生成">
+                      <select className="input" value={reviewImageProvider} onChange={(event) => setReviewImageProvider(event.target.value as JobProvider)}>
+                        <option value="mock">mock</option>
+                        <option value="openai">openai</option>
+                        <option value="comfyui">comfyui</option>
+                      </select>
+                        </Field>
+                        <Button type="button" onClick={regenerateReviewShotImage} busy={busyAction === "review-regenerate-shot-image"} icon={Image}>
+                          重生成图片
+                        </Button>
+                      </div>
+                      <div className="mt-3 grid gap-2">
+                        <Field label="Workflow Template">
+                          <select
+                            className="input"
+                            value={reviewWorkflowTemplate}
+                            onChange={(event) => {
+                              const nextTemplateId = event.target.value;
+                              const template = workflowTemplates.find((item) => item.template_id === nextTemplateId);
+                              setReviewWorkflowTemplate(nextTemplateId);
+                              if (template) setReviewImageProvider(template.provider);
+                              if (reviewShotId) updateReviewShot(reviewShotId, { workflow_template: nextTemplateId });
+                            }}
+                          >
+                            {workflowTemplates.map((template) => (
+                              <option key={template.template_id} value={template.template_id}>
+                                {template.name} / {template.provider}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                        <div className="grid gap-2 rounded-ui border border-line bg-slate-50 p-2">
+                          <div className="text-xs font-semibold text-ink-700">当前镜头引用</div>
+                          {references.length ? (
+                            <div className="grid grid-cols-2 gap-2 max-[720px]:grid-cols-1">
+                              {references.map((reference) => (
+                                <label key={reference.reference_id} className="flex items-center gap-2 rounded-ui bg-white px-2 py-1 text-xs text-ink-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(currentReviewShot?.reference_bindings?.includes(reference.reference_id))}
+                                    onChange={(event) => toggleReviewReferenceBinding(reference.reference_id, event.target.checked)}
+                                  />
+                                  <span className="truncate">{reference.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-ink-500">暂无连续性素材。</div>
+                          )}
+                        </div>
+                      </div>
                     </Panel>
 
                     <Panel title="分镜表" icon={FileText}>
                       <div className="grid gap-3">
                         {reviewStoryboard.shots.map((shot) => (
-                          <article key={shot.shot_id} className="grid gap-2 rounded-ui border border-line bg-white p-3">
+                          <article key={shot.shot_id} className="grid gap-3 rounded-ui border border-line bg-white p-4 shadow-sm">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span className="rounded-ui bg-blue-50 px-2 py-1 font-mono text-xs font-semibold text-blue-700">{shot.shot_id}</span>
-                              <input className="input h-8 w-24" type="number" min={1} max={60} value={shot.duration} onChange={(event) => updateReviewShot(shot.shot_id, { duration: Number(event.target.value) })} />
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-ui bg-teal-50 px-2 py-1 font-mono text-xs font-semibold text-teal-700">{shot.shot_id}</span>
+                                <span className={clsx("rounded-ui px-2 py-1 text-xs", reviewStatusClass(shot.review_status))}>{reviewStatusLabel(shot.review_status)}</span>
+                              </div>
+                              <input className="input w-24" type="number" min={1} max={60} value={shot.duration} onChange={(event) => updateReviewShot(shot.shot_id, { duration: Number(event.target.value) })} />
                             </div>
                             <Field label="画面">
                               <textarea className="input min-h-[72px] resize-y py-2 leading-6" value={shot.scene} onChange={(event) => updateReviewShot(shot.shot_id, { scene: event.target.value })} />
@@ -1150,6 +1453,23 @@ export function App() {
                                 <input className="input" value={shot.emotion} onChange={(event) => updateReviewShot(shot.shot_id, { emotion: event.target.value })} />
                               </Field>
                             </div>
+                            <div className="grid grid-cols-2 gap-2 max-[720px]:grid-cols-1">
+                              <Field label="源图">
+                                <input className="input font-mono text-xs" value={shot.source_image || "未生成"} readOnly />
+                              </Field>
+                              <Field label="成图">
+                                <input className="input font-mono text-xs" value={shot.anime_image || "未生成"} readOnly />
+                              </Field>
+                            </div>
+                            <div className="grid gap-1 rounded-ui bg-slate-50 px-3 py-2 text-xs text-ink-600">
+                              <div>模板：{shot.workflow_template || "mock_image"} / 引用：{shot.reference_bindings?.join(", ") || "无"}</div>
+                              <div>重跑：{shot.rerun_history?.length ?? 0} 次</div>
+                              {(shot.rerun_history ?? []).slice(-3).map((record) => (
+                                <div key={`${record.created_at}-${record.anime_image}`} className="truncate font-mono">
+                                  {record.created_at} / {record.workflow_template} / {record.provider} / {record.anime_image}
+                                </div>
+                              ))}
+                            </div>
                           </article>
                         ))}
                       </div>
@@ -1163,10 +1483,19 @@ export function App() {
           </Tabs.Content>
 
           <Tabs.Content value="episode-studio">
-            <section className="grid grid-cols-[360px_minmax(0,1fr)] gap-3 max-[1080px]:grid-cols-1">
+            <WorkflowStepStrip
+              steps={[
+                { label: "项目设定", done: Boolean(currentProject) },
+                { label: "剧集草稿", done: projectEpisodes.length > 0 },
+                { label: "分镜", done: draftedEpisodes > 0 },
+                { label: "图片", done: imagedEpisodes > 0 },
+                { label: "视频", done: readyEpisodes > 0 },
+              ]}
+            />
+            <section className="grid grid-cols-[360px_minmax(0,1fr)] gap-4 max-[1080px]:grid-cols-1">
               <Panel title="剧集参数" icon={Clapperboard}>
                 <form onSubmit={createStoryboard} className="grid gap-3">
-                  <div className="rounded-ui border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                  <div className="rounded-ui border border-teal-100 bg-teal-50 px-3 py-2 text-sm text-teal-900">
                     当前项目：<span className="font-mono">{currentProject?.name || currentProjectId}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -1209,9 +1538,10 @@ export function App() {
                   </div>
                   <div className="grid grid-cols-[1fr_auto] items-end gap-2">
                     <Field label="图片生成">
-                      <select className="input" value={episodeProvider} onChange={(event) => setEpisodeProvider(event.target.value as "mock" | "openai")}>
+                      <select className="input" value={episodeProvider} onChange={(event) => setEpisodeProvider(event.target.value as JobProvider)}>
                         <option value="mock">mock 占位图</option>
                         <option value="openai">gpt-image-2 API</option>
+                        <option value="comfyui">ComfyUI 工作流</option>
                       </select>
                     </Field>
                     <Button variant="secondary" type="button" onClick={loadEpisode} busy={busyAction === "episode-load"} icon={RefreshCw}>
@@ -1234,6 +1564,12 @@ export function App() {
 
               <div className="grid gap-3">
                 <Panel title="项目级批量生产" icon={Clapperboard}>
+                  <div className="mb-3 grid grid-cols-4 gap-2 max-[760px]:grid-cols-2">
+                    <MiniMetric label="草稿" value={String(projectEpisodes.length)} />
+                    <MiniMetric label="已有分镜" value={String(draftedEpisodes)} />
+                    <MiniMetric label="可合成" value={String(imagedEpisodes)} />
+                    <MiniMetric label="异常" value={String(failedEpisodes)} tone={failedEpisodes ? "danger" : "default"} />
+                  </div>
                   <form onSubmit={createBatchEpisodes} className="grid gap-3">
                     <div className="grid grid-cols-[120px_minmax(0,1fr)_auto] items-end gap-2 max-[720px]:grid-cols-1">
                       <Field label="集数">
@@ -1247,7 +1583,7 @@ export function App() {
                       </Button>
                     </div>
                   </form>
-                  <div className="mt-3 grid gap-3 rounded-ui border border-slate-200 bg-slate-50 p-3">
+                  <div className="mt-3 grid gap-3 rounded-ui border border-slate-200 bg-slate-50 p-4">
                     <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2 max-[820px]:grid-cols-1">
                       <Field label="任务步骤">
                         <select className="input" value={jobStepMode} onChange={(event) => setJobStepMode(event.target.value as "full" | JobStep)}>
@@ -1261,6 +1597,7 @@ export function App() {
                         <select className="input" value={jobProvider} onChange={(event) => setJobProvider(event.target.value as JobProvider)}>
                           <option value="mock">mock 占位图</option>
                           <option value="openai">gpt-image-2 API</option>
+                          <option value="comfyui">ComfyUI 工作流</option>
                         </select>
                       </Field>
                       <Button type="button" onClick={createProductionJob} busy={busyAction === "job-create"} icon={Play} disabled={selectedEpisodeIds.length === 0}>
@@ -1342,7 +1679,7 @@ export function App() {
                   />
                 )}
 
-                <section className="grid grid-cols-4 gap-3 max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
+                <section className="grid grid-cols-4 gap-4 max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
                   <StatusMetric label="分镜" value={episode ? `${episode.shots.length} 条` : "未生成"} />
                   <StatusMetric label="图片" value={episode ? `${imageReadyCount}/${episode.shots.length}` : "0/0"} />
                   <StatusMetric label="时长" value={episode ? `${episode.duration_seconds}s` : `${episodeForm.duration_seconds}s`} />
@@ -1367,10 +1704,10 @@ export function App() {
                       </div>
                       <div className="grid gap-2">
                         {episode.shots.map((shot) => (
-                          <article key={shot.shot_id} className="grid gap-2 rounded-ui border border-line bg-white p-3">
+                          <article key={shot.shot_id} className="grid gap-3 rounded-ui border border-line bg-white p-4 shadow-sm">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="flex items-center gap-2">
-                                <span className="rounded-ui bg-blue-50 px-2 py-1 font-mono text-xs font-semibold text-blue-700">{shot.shot_id}</span>
+                                <span className="rounded-ui bg-teal-50 px-2 py-1 font-mono text-xs font-semibold text-teal-700">{shot.shot_id}</span>
                                 <span className="font-mono text-xs text-ink-500">{shot.duration}s</span>
                                 <span className="text-xs text-ink-500">{shot.camera}</span>
                               </div>
@@ -1406,7 +1743,7 @@ export function App() {
               {outputs.length ? (
                 <div className="grid gap-2">
                   {outputs.map((item) => (
-                    <article key={item.video_path} className="rounded-ui border border-line bg-white p-3">
+                    <article key={item.video_path} className="rounded-ui border border-line bg-white p-4 shadow-sm">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm font-semibold">{item.filename}</div>
                         <div className="font-mono text-xs text-ink-500">{formatBytes(item.size_bytes)}</div>
@@ -1424,19 +1761,30 @@ export function App() {
 
           <Tabs.Content value="services">
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Button onClick={startComfy} busy={busyAction === "start-comfy"} icon={Play}>
-                启动 ComfyUI
-              </Button>
-              <Button variant="secondary" onClick={stopComfy} busy={busyAction === "stop-comfy"} icon={Square}>
-                停止 ComfyUI
-              </Button>
-              <a className="button-ghost" href="http://127.0.0.1:8188" target="_blank" rel="noreferrer">
+              {comfyMode === "remote" ? (
+                <Button onClick={testComfyConnection} busy={busyAction === "test-comfy"} icon={RefreshCw}>
+                  测试远程 ComfyUI
+                </Button>
+              ) : (
+                <>
+                  <Button onClick={startComfy} busy={busyAction === "start-comfy"} icon={Play}>
+                    启动 ComfyUI
+                  </Button>
+                  <Button variant="secondary" onClick={stopComfy} busy={busyAction === "stop-comfy"} icon={Square}>
+                    停止 ComfyUI
+                  </Button>
+                </>
+              )}
+              <a className="button-ghost" href={comfyEffectiveUrl || "http://127.0.0.1:8188"} target="_blank" rel="noreferrer">
                 <ExternalLink className="h-4 w-4" />
                 打开 ComfyUI
               </a>
             </div>
+            <div className="mb-3 rounded-ui border border-line bg-white px-3 py-2 text-sm text-ink-700 shadow-sm">
+              当前 ComfyUI：<span className="font-mono">{comfyMode}</span> / <span className="break-all font-mono">{status?.comfyui.base_url || comfyEffectiveUrl}</span>
+            </div>
             <Panel title="服务日志" icon={FileText} action={<Button variant="secondary" size="sm" onClick={() => runBusy("logs", refreshLogs)} icon={RefreshCw}>刷新日志</Button>}>
-              <LogBlock value={serviceLog || status?.comfyui.log_tail || "暂无日志"} />
+              <LogBlock value={comfyMode === "remote" ? status?.comfyui.api_detail || "远程模式不读取本地 ComfyUI 日志。" : serviceLog || status?.comfyui.log_tail || "暂无日志"} />
             </Panel>
           </Tabs.Content>
 
@@ -1463,8 +1811,17 @@ export function App() {
               <Field label="文本模型">
                 <input className="input" name="ollama_text_model" value={configDraft.ollama_text_model} onChange={(event) => setConfigDraft({ ...configDraft, ollama_text_model: event.target.value })} />
               </Field>
-              <Field label="ComfyUI 地址">
+              <Field label="ComfyUI 来源">
+                <select className="input" name="comfyui_mode" value={configDraft.comfyui_mode} onChange={(event) => setConfigDraft({ ...configDraft, comfyui_mode: event.target.value as "local" | "remote" })}>
+                  <option value="local">本地服务</option>
+                  <option value="remote">远程服务</option>
+                </select>
+              </Field>
+              <Field label="本地 ComfyUI 地址">
                 <input className="input" name="comfyui_base_url" value={configDraft.comfyui_base_url} onChange={(event) => setConfigDraft({ ...configDraft, comfyui_base_url: event.target.value })} />
+              </Field>
+              <Field label="远程 ComfyUI 地址">
+                <input className="input" name="comfyui_remote_base_url" value={configDraft.comfyui_remote_base_url} onChange={(event) => setConfigDraft({ ...configDraft, comfyui_remote_base_url: event.target.value })} placeholder="http://server:8188" />
               </Field>
               <Field label="输出目录">
                 <input className="input" name="output_dir" value={configDraft.output_dir} onChange={(event) => setConfigDraft({ ...configDraft, output_dir: event.target.value })} />
@@ -1524,9 +1881,11 @@ function Button({
       {...props}
       disabled={busy || props.disabled}
       className={clsx(
-        "inline-flex items-center justify-center gap-2 rounded-ui border text-sm outline-none transition focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60",
-        size === "sm" ? "h-8 px-2.5" : "h-9 px-3",
-        variant === "primary" ? "border-blue-600 bg-blue-600 text-white hover:bg-blue-700" : "border-line bg-panel text-ink-900 hover:bg-slate-50",
+        "inline-flex items-center justify-center gap-2 rounded-ui border text-sm font-medium outline-none transition focus-visible:ring-4 disabled:cursor-not-allowed disabled:opacity-60",
+        size === "sm" ? "h-10 px-3" : "h-11 px-4",
+        variant === "primary"
+          ? "border-teal-600 bg-teal-600 text-white shadow-sm hover:border-teal-700 hover:bg-teal-700 focus-visible:ring-teal-100"
+          : "border-line bg-white text-ink-900 shadow-sm hover:border-slate-300 hover:bg-slate-50 focus-visible:ring-slate-200",
         props.className,
       )}
     >
@@ -1536,24 +1895,171 @@ function Button({
   );
 }
 
+function ProductionCommand({
+  projectName,
+  projectId,
+  episodeCount,
+  readyEpisodes,
+  runningJobs,
+  failedEpisodes,
+  onDocument,
+  onReview,
+  onQueue,
+}: {
+  projectName: string;
+  projectId: string;
+  episodeCount: number;
+  readyEpisodes: number;
+  runningJobs: number;
+  failedEpisodes: number;
+  onDocument: () => void;
+  onReview: () => void;
+  onQueue: () => void;
+}) {
+  return (
+    <section className="rounded-ui border border-line bg-white p-5 shadow-panel">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="inline-flex items-center gap-2 rounded-ui bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700">
+            <Activity className="h-3.5 w-3.5" />
+            生产指挥台
+          </div>
+          <h2 className="mt-3 truncate text-xl font-semibold leading-tight text-ink-900">{projectName}</h2>
+          <div className="mt-1 break-all font-mono text-xs text-ink-500">{projectId}</div>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs max-[520px]:w-full">
+          <MiniMetric label="剧集" value={String(episodeCount)} />
+          <MiniMetric label="成片" value={`${readyEpisodes}/${episodeCount || 0}`} />
+          <MiniMetric label="任务" value={String(runningJobs)} />
+          <MiniMetric label="异常" value={String(failedEpisodes)} tone={failedEpisodes ? "danger" : "default"} />
+        </div>
+      </div>
+      <div className="mt-5 grid grid-cols-3 gap-2 max-[760px]:grid-cols-1">
+        <CommandButton label="导入文档" detail="拆集与初稿" icon={Upload} onClick={onDocument} />
+        <CommandButton label="打开审稿" detail="连续性与重跑" icon={FileText} onClick={onReview} />
+        <CommandButton label="创建任务" detail="批量入队" icon={Play} onClick={onQueue} />
+      </div>
+    </section>
+  );
+}
+
+function CommandButton({
+  label,
+  detail,
+  icon: Icon,
+  onClick,
+}: {
+  label: string;
+  detail: string;
+  icon: React.ComponentType<{ className?: string }>;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-[74px] items-center gap-3 rounded-ui border border-line bg-slate-50 px-3 text-left outline-none transition hover:border-teal-200 hover:bg-teal-50 focus-visible:ring-4 focus-visible:ring-teal-100"
+    >
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-ui bg-white text-teal-700 shadow-sm">
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-ink-900">{label}</span>
+        <span className="mt-0.5 block text-xs text-ink-500">{detail}</span>
+      </span>
+    </button>
+  );
+}
+
+function NextActionCard({
+  label,
+  detail,
+  icon: Icon,
+  onClick,
+}: {
+  label: string;
+  detail: string;
+  icon: React.ComponentType<{ className?: string }>;
+  onClick: () => void;
+}) {
+  return (
+    <section className="rounded-ui border border-teal-200 bg-teal-50 p-5 shadow-panel">
+      <div className="flex h-full flex-col justify-between gap-5">
+        <div>
+          <div className="grid h-10 w-10 place-items-center rounded-ui bg-white text-teal-700 shadow-sm">
+            <Icon className="h-4 w-4" />
+          </div>
+          <div className="mt-4 text-xs font-semibold text-teal-700">下一步建议</div>
+          <h2 className="mt-1 text-xl font-semibold text-ink-900">{label}</h2>
+          <p className="m-0 mt-2 text-sm leading-6 text-ink-700">{detail}</p>
+        </div>
+        <Button type="button" onClick={onClick} icon={Icon}>
+          {label}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function WorkflowStepStrip({ steps }: { steps: Array<{ label: string; done: boolean }> }) {
+  return (
+    <section className="mb-4 grid grid-cols-5 gap-2 rounded-ui border border-line bg-white p-2 shadow-sm max-[860px]:grid-cols-1">
+      {steps.map((step, index) => (
+        <div
+          key={step.label}
+          className={clsx(
+            "flex min-h-[52px] items-center gap-2 rounded-ui px-3 text-sm",
+            step.done ? "bg-teal-50 text-teal-800" : "bg-slate-50 text-ink-500",
+          )}
+        >
+          <span className={clsx("grid h-6 w-6 shrink-0 place-items-center rounded-ui font-mono text-xs", step.done ? "bg-teal-600 text-white" : "bg-white text-ink-500")}>
+            {step.done ? <CheckCircle2 className="h-3.5 w-3.5" /> : index + 1}
+          </span>
+          <span className="font-medium">{step.label}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function MiniMetric({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "danger" }) {
+  return (
+    <article className={clsx("rounded-ui border px-3 py-2", tone === "danger" ? "border-red-200 bg-red-50" : "border-line bg-white")}>
+      <div className={clsx("text-[11px] font-medium", tone === "danger" ? "text-red-700" : "text-ink-500")}>{label}</div>
+      <div className={clsx("mt-0.5 font-mono text-lg font-semibold leading-6", tone === "danger" ? "text-red-800" : "text-ink-900")}>{value}</div>
+    </article>
+  );
+}
+
 function StatusCard({ title, ok, detail, icon: Icon }: { title: string; ok: boolean; detail: string; icon: React.ComponentType<{ className?: string }> }) {
   return (
-    <article className="min-h-[82px] rounded-ui border border-line bg-panel p-3.5">
+    <article className="min-h-[108px] rounded-ui border border-line bg-panel p-4 shadow-panel">
       <div className="flex items-center justify-between gap-2 text-sm font-semibold">
-        <span className="inline-flex items-center gap-2">
-          <Icon className="h-4 w-4 text-ink-500" />
+        <span className="inline-flex items-center gap-2 text-ink-900">
+          <span className={clsx("grid h-8 w-8 place-items-center rounded-ui", ok ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700")}>
+            <Icon className="h-4 w-4" />
+          </span>
           {title}
         </span>
-        <span className={clsx("h-2.5 w-2.5 rounded-full", ok ? "bg-emerald-600" : "bg-red-600")} />
+        <span className={clsx("rounded-ui px-2 py-1 text-[11px] font-medium", ok ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700")}>{ok ? "可用" : "待处理"}</span>
       </div>
-      <div className="mt-2 break-all font-mono text-xs text-ink-500">{detail}</div>
+      <div className="mt-3 break-all rounded-ui bg-slate-50 px-2.5 py-2 font-mono text-xs leading-5 text-ink-500">{detail}</div>
+    </article>
+  );
+}
+
+function HeaderMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="rounded-ui border border-line bg-white px-3 py-2 shadow-sm">
+      <div className="text-[11px] font-medium text-ink-500">{label}</div>
+      <div className="mt-0.5 font-mono text-lg font-semibold leading-6 text-ink-900">{value}</div>
     </article>
   );
 }
 
 function StatusMetric({ label, value }: { label: string; value: string }) {
   return (
-    <article className="rounded-ui border border-line bg-panel p-3">
+    <article className="rounded-ui border border-line bg-panel p-4 shadow-panel">
       <div className="text-xs text-ink-500">{label}</div>
       <div className="mt-1 break-all font-mono text-lg font-semibold text-ink-900">{value}</div>
     </article>
@@ -1579,11 +2085,11 @@ function EpisodeRow({
 }) {
   const canExportVideo = episode.status === "imaged" || episode.status === "exported";
   return (
-    <article className="rounded-ui border border-line bg-white p-3">
+    <article className="rounded-ui border border-line bg-white p-4 shadow-sm transition hover:shadow-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 gap-3">
           <input
-            className="mt-1 h-4 w-4 accent-blue-600"
+            className="mt-1 h-5 w-5 accent-teal-600"
             type="checkbox"
             checked={selected}
             onChange={(event) => onSelected(episode.episode_id, event.target.checked)}
@@ -1641,7 +2147,7 @@ function JobRow({
 }) {
   const active = job.status === "queued" || job.status === "running";
   return (
-    <article className={clsx("rounded-ui border bg-white p-3", selected ? "border-blue-300 bg-blue-50" : "border-line")}>
+    <article className={clsx("rounded-ui border p-4 shadow-sm transition hover:shadow-panel", selected ? "border-teal-300 bg-teal-50" : "border-line bg-white")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -1690,7 +2196,7 @@ function JobRow({
         </div>
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded-ui bg-slate-100">
-        <div className="h-full bg-blue-600 transition-all" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
+        <div className="h-full bg-teal-600 transition-all" style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
       </div>
       <div className="mt-2 flex flex-wrap justify-between gap-2 font-mono text-[11px] text-ink-500">
         <span>{job.progress}%</span>
@@ -1851,15 +2357,17 @@ function JobItemBadge({ item }: { item: JobItem }) {
 }
 
 function EmptyState({ text }: { text: string }) {
-  return <div className="rounded-ui border border-dashed border-line bg-slate-50 px-3 py-8 text-center text-sm text-ink-500">{text}</div>;
+  return <div className="rounded-ui border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-ink-500">{text}</div>;
 }
 
 function Panel({ title, icon: Icon, action, children }: { title: string; icon: React.ComponentType<{ className?: string }>; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="rounded-ui border border-line bg-panel p-3.5">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="inline-flex items-center gap-2 text-[15px] font-semibold">
-          <Icon className="h-4 w-4 text-ink-500" />
+    <section className="rounded-ui border border-line bg-panel p-4 shadow-panel">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="inline-flex items-center gap-2 text-[15px] font-semibold text-ink-900">
+          <span className="grid h-8 w-8 place-items-center rounded-ui bg-slate-100 text-ink-700">
+            <Icon className="h-4 w-4" />
+          </span>
           {title}
         </h2>
         {action}
@@ -1879,7 +2387,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function LogBlock({ value, minHeight = "min-h-[220px]" }: { value?: string; minHeight?: string }) {
-  return <pre className={clsx("max-h-[460px] overflow-auto rounded-ui border border-slate-800 bg-[#121923] p-3 font-mono text-xs leading-6 text-slate-100", minHeight)}>{value || "暂无日志"}</pre>;
+  return <pre className={clsx("max-h-[460px] overflow-auto rounded-ui border border-slate-800 bg-[#111827] p-4 font-mono text-xs leading-6 text-slate-100 shadow-inner", minHeight)}>{value || "暂无日志"}</pre>;
 }
 
 function buildStatusCards(status: LauncherStatus | null, config: PublicConfig) {
@@ -1887,7 +2395,7 @@ function buildStatusCards(status: LauncherStatus | null, config: PublicConfig) {
     {
       title: "ComfyUI",
       ok: Boolean(status?.comfyui.api_running),
-      detail: status?.comfyui.api_running ? config.comfyui_base_url : "未运行",
+      detail: status?.comfyui.api_running ? status?.comfyui.base_url || config.comfyui_base_url : `${status?.comfyui.base_url || config.comfyui_base_url} / 未连接`,
       icon: Server,
     },
     {
@@ -1957,7 +2465,7 @@ function jobStatusClass(status: Job["status"]) {
   if (status === "completed") return "bg-emerald-50 text-emerald-700";
   if (status === "failed") return "bg-red-50 text-red-700";
   if (status === "cancelled") return "bg-slate-100 text-ink-500";
-  if (status === "running") return "bg-blue-50 text-blue-700";
+  if (status === "running") return "bg-amber-50 text-amber-700";
   return "bg-amber-50 text-amber-700";
 }
 
@@ -1986,8 +2494,25 @@ function jobItemStatusClass(status: JobItem["status"]) {
   if (status === "completed") return "bg-emerald-50 text-emerald-700";
   if (status === "failed") return "bg-red-50 text-red-700";
   if (status === "cancelled" || status === "skipped") return "bg-slate-100 text-ink-500";
-  if (status === "running") return "bg-blue-50 text-blue-700";
+  if (status === "running") return "bg-amber-50 text-amber-700";
   return "bg-amber-50 text-amber-700";
+}
+
+function reviewStatusLabel(status?: "pending" | "approved" | "rejected" | "revise") {
+  const labels = {
+    pending: "待审",
+    approved: "通过",
+    rejected: "驳回",
+    revise: "待修改",
+  };
+  return labels[status ?? "pending"];
+}
+
+function reviewStatusClass(status?: "pending" | "approved" | "rejected" | "revise") {
+  if (status === "approved") return "bg-emerald-50 text-emerald-700";
+  if (status === "rejected") return "bg-red-50 text-red-700";
+  if (status === "revise") return "bg-amber-50 text-amber-700";
+  return "bg-slate-100 text-ink-500";
 }
 
 function wait(ms: number) {

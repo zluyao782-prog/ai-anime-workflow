@@ -50,6 +50,29 @@ class ComfyUIServiceTest(unittest.TestCase):
             self.assertEqual(result["status"], "stopped")
             self.assertFalse(pid_file.exists())
 
+    def test_remote_status_does_not_read_local_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid_file = root / "work/comfyui.pid"
+            pid_file.parent.mkdir(parents=True)
+            pid_file.write_text("12345", encoding="utf-8")
+            service = ComfyUIService(project_root=root)
+
+            with patch("anime_workflow.launcher.services.urlopen") as urlopen, patch("os.kill") as kill:
+                response = Mock()
+                response.read.return_value = b"{\"system\": \"ok\"}"
+                urlopen.return_value.__enter__.return_value = response
+
+                status = service.status("http://10.0.0.2:8188", mode="remote")
+
+            self.assertEqual(status["mode"], "remote")
+            self.assertEqual(status["base_url"], "http://10.0.0.2:8188")
+            self.assertFalse(status["process_running"])
+            self.assertIsNone(status["pid"])
+            self.assertTrue(status["api_running"])
+            self.assertEqual(status["log_tail"], "")
+            kill.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

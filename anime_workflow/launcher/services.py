@@ -10,10 +10,16 @@ from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from anime_workflow.launcher.config import effective_comfyui_base_url
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 D_COMFYUI_DIR = Path("/mnt/d/Codex/ai-anime-workflow/ComfyUI")
 D_COMFYUI_VENV = Path("/mnt/d/Codex/ai-anime-workflow/comfyui-venv")
+
+
+def display_path(path: Path) -> str:
+    return Path(path).as_posix()
 
 
 def tail_file(path: Path, lines: int = 120) -> str:
@@ -44,7 +50,7 @@ class ComfyUIService:
             return {"status": "already_running", "pid": self._read_pid()}
         self.work_dir.mkdir(parents=True, exist_ok=True)
         command = [
-            str(self.comfyui_venv / "bin/python"),
+            display_path(self.comfyui_venv / "bin/python"),
             "main.py",
             "--cpu",
             "--listen",
@@ -55,7 +61,7 @@ class ComfyUIService:
         with self.log_file.open("a", encoding="utf-8") as log:
             process = self.popen_factory(
                 command,
-                cwd=str(self.comfyui_dir),
+                cwd=display_path(self.comfyui_dir),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -87,14 +93,17 @@ class ComfyUIService:
                 self.pid_file.unlink()
             return False
 
-    def status(self, base_url: str = "http://127.0.0.1:8188") -> dict[str, Any]:
+    def status(self, base_url: str = "http://127.0.0.1:8188", mode: str = "local") -> dict[str, Any]:
         api = check_http_json(f"{base_url.rstrip('/')}/system_stats")
+        is_local = mode != "remote"
         return {
-            "process_running": self.is_running(),
-            "pid": self._read_pid(),
+            "mode": mode,
+            "base_url": base_url,
+            "process_running": self.is_running() if is_local else False,
+            "pid": self._read_pid() if is_local else None,
             "api_running": api["ok"],
             "api_detail": api["detail"],
-            "log_tail": tail_file(self.log_file, 80),
+            "log_tail": tail_file(self.log_file, 80) if is_local else "",
         }
 
     def _read_pid(self) -> int | None:
@@ -116,7 +125,8 @@ def check_http_json(url: str, timeout: int = 2) -> dict[str, Any]:
 
 
 def environment_status(config: dict[str, Any]) -> dict[str, Any]:
-    comfy = ComfyUIService().status(config.get("comfyui_base_url", "http://127.0.0.1:8188"))
+    comfy_mode = str(config.get("comfyui_mode") or "local")
+    comfy = ComfyUIService().status(effective_comfyui_base_url(config), mode=comfy_mode)
     ollama = check_http_json("http://127.0.0.1:11434/api/tags")
     return {
         "python": {"ok": True},
@@ -125,8 +135,8 @@ def environment_status(config: dict[str, Any]) -> dict[str, Any]:
         "comfyui": comfy,
         "openai": {"configured": bool(config.get("openai_api_key"))},
         "paths": {
-            "comfyui_dir": str(D_COMFYUI_DIR),
-            "comfyui_venv": str(D_COMFYUI_VENV),
+            "comfyui_dir": display_path(D_COMFYUI_DIR),
+            "comfyui_venv": display_path(D_COMFYUI_VENV),
             "ollama_models": "/mnt/d/Codex/ai-anime-workflow/ollama-models",
             "output_dir": str(PROJECT_ROOT / config.get("output_dir", "data/exports")),
         },

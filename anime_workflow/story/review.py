@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -29,7 +31,20 @@ SHOT_REQUIRED = {
     "anime_image",
 }
 
-SHOT_EDITABLE = {"duration", "scene", "dialogue", "image_prompt", "camera", "emotion"}
+REVIEW_STATUSES = {"pending", "approved", "rejected", "revise"}
+
+SHOT_EDITABLE = {
+    "duration",
+    "scene",
+    "dialogue",
+    "image_prompt",
+    "camera",
+    "emotion",
+    "reference_bindings",
+    "workflow_template",
+    "review_status",
+    "review_note",
+}
 
 
 def validate_storyboard_for_review(storyboard: dict[str, Any]) -> dict[str, Any]:
@@ -51,7 +66,15 @@ def update_storyboard_shot(storyboard: dict[str, Any], shot_id: str, updates: di
             continue
         for key, value in updates.items():
             if key in SHOT_EDITABLE:
-                shot[key] = int(value) if key == "duration" else str(value)
+                if key == "duration":
+                    shot[key] = int(value)
+                elif key == "reference_bindings":
+                    shot[key] = normalize_reference_bindings(value)
+                elif key == "review_status":
+                    shot[key] = normalize_review_status(value)
+                    shot["reviewed_at"] = now_iso()
+                else:
+                    shot[key] = str(value)
         matched = True
         break
     if not matched:
@@ -74,5 +97,58 @@ def rewrite_storyboard_shot_local(storyboard: dict[str, Any], shot_id: str, inst
 
 def copy_storyboard(storyboard: dict[str, Any]) -> dict[str, Any]:
     copied = dict(storyboard)
-    copied["shots"] = [dict(shot) for shot in storyboard["shots"]]
+    copied["shots"] = [copy.deepcopy(shot) for shot in storyboard["shots"]]
     return copied
+
+
+def snapshot_storyboard_review(storyboard: dict[str, Any], note: str = "") -> dict[str, Any]:
+    next_storyboard = copy_storyboard(validate_storyboard_for_review(storyboard))
+    versions = next_storyboard.get("review_versions") if isinstance(next_storyboard.get("review_versions"), list) else []
+    snapshot = {
+        "version_id": f"review_{len(versions) + 1:03d}",
+        "created_at": now_iso(),
+        "note": str(note or "").strip(),
+        "summary": review_summary(next_storyboard),
+        "shots": [
+            {
+                "shot_id": shot.get("shot_id", ""),
+                "scene": shot.get("scene", ""),
+                "dialogue": shot.get("dialogue", ""),
+                "image_prompt": shot.get("image_prompt", ""),
+                "review_status": normalize_review_status(shot.get("review_status", "pending")),
+                "review_note": str(shot.get("review_note", "")),
+                "anime_image": shot.get("anime_image", ""),
+            }
+            for shot in next_storyboard["shots"]
+        ],
+    }
+    next_storyboard["review_versions"] = [*versions, snapshot][-20:]
+    return next_storyboard
+
+
+def review_summary(storyboard: dict[str, Any]) -> dict[str, int]:
+    summary = {"pending": 0, "approved": 0, "rejected": 0, "revise": 0}
+    for shot in storyboard.get("shots", []):
+        status = normalize_review_status(shot.get("review_status", "pending"))
+        summary[status] += 1
+    return summary
+
+
+def normalize_review_status(value: Any) -> str:
+    status = str(value or "pending").strip().lower()
+    return status if status in REVIEW_STATUSES else "pending"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_reference_bindings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        reference_id = str(item or "").strip()
+        if reference_id and reference_id not in result:
+            result.append(reference_id)
+    return result
