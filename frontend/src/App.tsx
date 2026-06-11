@@ -634,7 +634,7 @@ export function App() {
     runBusy(`project-video-${projectEpisode.episode_id}`, async () => {
       const result = await api.exportProjectEpisodeVideo(projectEpisode.project_id, projectEpisode.episode_id);
       if (result.storyboard) setEpisode(result.storyboard);
-      setEpisodeLog(`项目视频已导出：${result.video_path || result.episode.video_path}`);
+      setEpisodeLog(`视频已导出：${result.video_path}`);
       await refreshProjectLibrary(projectEpisode.project_id);
     });
 
