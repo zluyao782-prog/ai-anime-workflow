@@ -55,6 +55,14 @@ npm run build
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+本地生产链路 smoke（需要先启动 launcher）：
+
+```bash
+python scripts/smoke_production_loop.py --provider comfyui --workflow-template comfyui_external_anime --confirm-openai
+```
+
+警告：`openai` 和 `comfyui` provider 可能消耗真实图片 API 额度。没有传入 `--confirm-openai` 时，真实 provider smoke 会在发起网络请求前退出，不会运行。
+
 ## 配置
 
 复制配置模板：
