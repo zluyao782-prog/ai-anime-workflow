@@ -64,7 +64,7 @@ def _generate_shot_image(
     source = Path(source_dir) / storyboard["project_id"] / storyboard["episode_id"] / f"{shot['shot_id']}.png"
     create_source_frame(source, index=index)
     workflow_template = str(shot.get("workflow_template") or "mock_image")
-    reference_bindings = tuple(str(item) for item in shot.get("reference_bindings", []) if str(item).strip())
+    reference_bindings = tuple(normalized_reference_bindings(shot.get("reference_bindings")))
     result = adapter.stylize(
         AnimeApiRequest(
             project_id=storyboard["project_id"],
@@ -86,7 +86,7 @@ def _generate_shot_image(
 
 def prompt_with_references(shot: dict[str, Any], references: list[dict[str, Any]]) -> str:
     base_prompt = str(shot.get("image_prompt") or "")
-    bindings = [str(item) for item in shot.get("reference_bindings", []) if str(item).strip()]
+    bindings = normalized_reference_bindings(shot.get("reference_bindings"))
     if not bindings:
         return base_prompt
     by_id = {str(reference.get("reference_id") or ""): reference for reference in references}
@@ -104,7 +104,7 @@ def prompt_with_references(shot: dict[str, Any], references: list[dict[str, Any]
 
 
 def reference_images_for_shot(shot: dict[str, Any], references: list[dict[str, Any]]) -> tuple[Path, ...]:
-    bindings = [str(item) for item in shot.get("reference_bindings", []) if str(item).strip()]
+    bindings = normalized_reference_bindings(shot.get("reference_bindings"))
     if not bindings:
         return ()
     by_id = {str(reference.get("reference_id") or ""): reference for reference in references}
@@ -119,6 +119,19 @@ def reference_images_for_shot(shot: dict[str, Any], references: list[dict[str, A
     return tuple(result)
 
 
+def normalized_reference_bindings(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        reference_id = str(item or "").strip()
+        if reference_id and reference_id not in seen:
+            seen.add(reference_id)
+            result.append(reference_id)
+    return result
+
+
 def append_rerun_history(shot: dict[str, Any], provider: AnimeProvider, workflow_template: str) -> None:
     history = shot.get("rerun_history") if isinstance(shot.get("rerun_history"), list) else []
     history.append(
@@ -127,7 +140,7 @@ def append_rerun_history(shot: dict[str, Any], provider: AnimeProvider, workflow
             "model_version": provider.model_version,
             "workflow_template": workflow_template,
             "prompt": shot.get("image_prompt", ""),
-            "reference_bindings": list(shot.get("reference_bindings", [])) if isinstance(shot.get("reference_bindings"), list) else [],
+            "reference_bindings": normalized_reference_bindings(shot.get("reference_bindings")),
             "source_image": shot.get("source_image", ""),
             "anime_image": shot.get("anime_image", ""),
             "metadata_path": shot.get("metadata_path", ""),

@@ -87,7 +87,7 @@ class EpisodeProductionTest(unittest.TestCase):
                 }
             )
             storyboard["shots"][0]["anime_image"] = "existing-shot-001.png"
-            storyboard["shots"][1]["reference_bindings"] = ["rain_alley"]
+            storyboard["shots"][1]["reference_bindings"] = [" rain_alley ", "", "rain_alley", "   "]
 
             def fake_source_frame(path: Path, index: int) -> None:
                 path.parent.mkdir(parents=True, exist_ok=True)
