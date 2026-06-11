@@ -12,6 +12,7 @@ from urllib import error, request
 
 import anime_workflow.launcher.server as launcher_server
 from anime_workflow.launcher.server import LauncherRequestHandler, project_id_from_api_path, static_file_for_request
+from anime_workflow.services.workflow_templates import workflow_template_by_id
 
 
 class NoopRunner:
@@ -234,6 +235,14 @@ class LauncherServerTest(unittest.TestCase):
                 self.assertIn("ComfyUI", comfyui["route_summary"])
             finally:
                 self.stop_server(server, thread)
+
+    def test_workflow_template_by_id_returns_deep_copy(self):
+        template = workflow_template_by_id("comfyui_external_anime")
+        template["comfyui"]["inputs"]["api_key"] = "mutated"
+
+        fresh = workflow_template_by_id("comfyui_external_anime")
+
+        self.assertEqual(fresh["comfyui"]["inputs"]["api_key"], "{{api_key}}")
 
     def test_production_readiness_api_reports_checks(self):
         with tempfile.TemporaryDirectory() as tmp:

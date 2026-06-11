@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 
@@ -59,12 +60,12 @@ BUILTIN_WORKFLOW_TEMPLATES = [
 
 
 def list_workflow_templates() -> list[dict[str, Any]]:
-    return [dict(template) for template in BUILTIN_WORKFLOW_TEMPLATES]
+    return deepcopy(BUILTIN_WORKFLOW_TEMPLATES)
 
 
 def workflow_template_by_id(template_id: str) -> dict[str, Any]:
     clean = str(template_id or "mock_image").strip()
     for template in BUILTIN_WORKFLOW_TEMPLATES:
         if template["template_id"] == clean:
-            return dict(template)
+            return deepcopy(template)
     raise ValueError("workflow_template is invalid")
