@@ -160,7 +160,7 @@ export function App() {
   const [selectedEpisodeIds, setSelectedEpisodeIds] = useState<string[]>([]);
   const [jobStepMode, setJobStepMode] = useState<"full" | JobStep>("full");
   const [jobProvider, setJobProvider] = useState<JobProvider>("mock");
-  const [jobWorkflowTemplate, setJobWorkflowTemplate] = useState("comfyui_external_anime");
+  const [jobWorkflowTemplate, setJobWorkflowTemplate] = useState("mock_image");
   const [documentDraft, setDocumentDraft] = useState(defaultDocumentDraft);
   const [documentContentBase64, setDocumentContentBase64] = useState("");
   const [documentResult, setDocumentResult] = useState<DocumentAdaptResponse | null>(null);
@@ -489,11 +489,20 @@ export function App() {
     runBusy("job-create", async () => {
       if (!currentProjectId) throw new Error("请先选择项目");
       if (selectedEpisodeIds.length === 0) throw new Error("请先勾选要批量生产的剧集");
+      if (!selectedJobWorkflowTemplate) {
+        throw new Error(`Workflow template "${jobWorkflowTemplate}" is not available for provider "${jobProvider}". Please choose an available template before creating a job.`);
+      }
+      if (selectedJobWorkflowTemplate.provider !== jobProvider) {
+        throw new Error(
+          `Workflow template "${selectedJobWorkflowTemplate.name}" belongs to provider "${selectedJobWorkflowTemplate.provider}", but the selected provider is "${jobProvider}".`,
+        );
+      }
       const selectedEpisodes = projectEpisodes.filter((projectEpisode) => selectedEpisodeIds.includes(projectEpisode.episode_id));
       const estimatedImages = selectedEpisodes.reduce((sum, projectEpisode) => sum + projectEpisode.shot_count, 0);
-      if (jobProvider === "openai") {
+      const needsOpenAIConfirmation = selectedJobWorkflowTemplate.requires_openai_confirmation || selectedJobWorkflowTemplate.consumes_api;
+      if (needsOpenAIConfirmation) {
         const confirmed = window.confirm(
-          `将使用 gpt-image-2 API 生产 ${selectedEpisodeIds.length} 集，预计最多调用 ${estimatedImages} 张图片。确认后可能消耗真实额度，是否继续？`,
+          `Workflow template "${selectedJobWorkflowTemplate.name}" uses route "${selectedJobWorkflowTemplate.route_summary}". Creating this job may consume real image API quota for up to ${estimatedImages} images across ${selectedEpisodeIds.length} episodes. Continue?`,
         );
         if (!confirmed) {
           setNotice("已取消真实 API 任务，没有创建队列。");
@@ -505,8 +514,8 @@ export function App() {
         episode_ids: selectedEpisodeIds,
         steps: [jobStepMode],
         provider: jobProvider,
-        workflow_template: jobWorkflowTemplate,
-        confirm_openai: jobProvider === "openai" || jobProvider === "comfyui",
+        workflow_template: selectedJobWorkflowTemplate.template_id,
+        confirm_openai: needsOpenAIConfirmation,
       });
       setEpisodeLog(`任务已加入队列：${result.job.job_id}`);
       setNotice("批量生产任务已创建");
@@ -741,6 +750,8 @@ export function App() {
   const currentProject = projects.find((project) => project.project_id === currentProjectId);
   const currentProjectJobs = jobs.filter((job) => job.project_id === currentProjectId);
   const jobWorkflowTemplateOptions = workflowTemplates.filter((template) => template.provider === jobProvider);
+  const selectedJobWorkflowTemplate = jobWorkflowTemplateOptions.find((template) => template.template_id === jobWorkflowTemplate) ?? null;
+  const canCreateProductionJob = selectedEpisodeIds.length > 0 && Boolean(selectedJobWorkflowTemplate);
   const selectedImageEstimate = projectEpisodes
     .filter((projectEpisode) => selectedEpisodeIds.includes(projectEpisode.episode_id))
     .reduce((sum, projectEpisode) => sum + projectEpisode.shot_count, 0);
@@ -1612,8 +1623,17 @@ export function App() {
                         </select>
                       </Field>
                       <Field label="Workflow Template">
-                        <select className="input" value={jobWorkflowTemplate} onChange={(event) => setJobWorkflowTemplate(event.target.value)}>
-                          {jobWorkflowTemplateOptions.length === 0 && <option value={jobWorkflowTemplate}>{jobWorkflowTemplate}</option>}
+                        <select
+                          className="input"
+                          value={jobWorkflowTemplateOptions.length === 0 ? "" : jobWorkflowTemplate}
+                          onChange={(event) => setJobWorkflowTemplate(event.target.value)}
+                          disabled={jobWorkflowTemplateOptions.length === 0}
+                        >
+                          {jobWorkflowTemplateOptions.length === 0 && (
+                            <option value="" disabled>
+                              无可用工作流模板
+                            </option>
+                          )}
                           {jobWorkflowTemplateOptions.map((template) => (
                             <option key={template.template_id} value={template.template_id}>
                               {template.name} ({template.template_id})
@@ -1621,7 +1641,7 @@ export function App() {
                           ))}
                         </select>
                       </Field>
-                      <Button type="button" onClick={createProductionJob} busy={busyAction === "job-create"} icon={Play} disabled={selectedEpisodeIds.length === 0}>
+                      <Button type="button" onClick={createProductionJob} busy={busyAction === "job-create"} icon={Play} disabled={!canCreateProductionJob}>
                         加入队列
                       </Button>
                     </div>
