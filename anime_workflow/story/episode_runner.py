@@ -16,12 +16,15 @@ def generate_episode_images(
     output_dir: Path,
     metadata_dir: Path,
     references: list[dict[str, Any]] | None = None,
+    workflow_template: str = "",
 ) -> dict[str, Any]:
     updated = dict(storyboard)
     updated["shots"] = [dict(shot) for shot in storyboard["shots"]]
     adapter = AnimeApiAdapter(provider=provider, output_dir=output_dir, metadata_dir=metadata_dir)
 
     for index, shot in enumerate(updated["shots"]):
+        if workflow_template:
+            shot["workflow_template"] = workflow_template
         _generate_shot_image(updated, shot, index, adapter, source_dir, references or [])
 
     return updated

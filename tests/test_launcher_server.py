@@ -763,6 +763,39 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
 
+    def test_storyboard_shot_image_rejects_workflow_template_provider_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "Demo", "default_shot_count": 1})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+                self.request_json(
+                    server,
+                    "/api/storyboard/save",
+                    {"project_id": "demo", "episode_id": "episode_001", "storyboard": sample_review_storyboard()},
+                )
+
+                status, payload = self.request_json(
+                    server,
+                    "/api/storyboard/shot/image",
+                    {
+                        "project_id": "demo",
+                        "episode_id": "episode_001",
+                        "shot_id": "shot_001",
+                        "provider": "mock",
+                        "workflow_template": "openai_image",
+                    },
+                )
+
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertEqual(payload["error"], "workflow_template provider does not match provider")
+            finally:
+                self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
+
     def test_comfyui_route_with_openai_key_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_storyboard_dir = launcher_server.STORYBOARD_DIR
@@ -864,9 +897,10 @@ class LauncherServerTest(unittest.TestCase):
                 self.assertEqual(storyboarded["episode"]["status"], "storyboarded")
                 self.assertTrue(Path(storyboarded["storyboard_path"]).exists())
 
-                def fake_generate_episode_images(storyboard, provider, source_dir, output_dir, metadata_dir, references=None):
+                def fake_generate_episode_images(storyboard, provider, source_dir, output_dir, metadata_dir, references=None, workflow_template=""):
                     updated = dict(storyboard)
                     updated["shots"] = [dict(shot) for shot in storyboard["shots"]]
+                    updated["shots"][0]["workflow_template"] = workflow_template
                     updated["shots"][0]["anime_image"] = str(Path(tmp) / "shot_001.png")
                     return updated
 
@@ -896,6 +930,29 @@ class LauncherServerTest(unittest.TestCase):
             finally:
                 self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
 
+    def test_project_episode_images_rejects_workflow_template_provider_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_storyboard_dir = launcher_server.STORYBOARD_DIR
+            previous_config_path = launcher_server.CONFIG_PATH
+            launcher_server.STORYBOARD_DIR = Path(tmp) / "storyboards"
+            launcher_server.CONFIG_PATH = Path(tmp) / "config/settings.local.json"
+            server, thread = self.with_server(Path(tmp) / "projects")
+            try:
+                self.request_json(server, "/api/projects", {"project_id": "demo", "name": "Demo", "default_shot_count": 1})
+                self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
+                save_storyboard(sample_review_storyboard(), launcher_server.STORYBOARD_DIR)
+
+                status, payload = self.request_json(
+                    server,
+                    "/api/projects/demo/episodes/episode_001/images",
+                    {"provider": "mock", "workflow_template": "comfyui_external_anime"},
+                )
+
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertEqual(payload["error"], "workflow_template provider does not match provider")
+            finally:
+                self.stop_server_with_paths(server, thread, previous_storyboard_dir, previous_config_path)
+
     def test_project_episode_video_uses_configured_output_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_storyboard_dir = launcher_server.STORYBOARD_DIR
@@ -919,7 +976,14 @@ class LauncherServerTest(unittest.TestCase):
                 )
                 self.request_json(server, "/api/projects/demo/episodes/batch", {"count": 1})
                 self.request_json(server, "/api/projects/demo/episodes/episode_001/storyboard", {})
-                with mock.patch.object(launcher_server, "generate_episode_images", lambda storyboard, provider, source_dir, output_dir, metadata_dir: {**storyboard, "shots": [{**storyboard["shots"][0], "anime_image": str(Path(tmp) / "frame.png")}]}):
+                with mock.patch.object(
+                    launcher_server,
+                    "generate_episode_images",
+                    lambda storyboard, provider, source_dir, output_dir, metadata_dir, references=None, workflow_template="": {
+                        **storyboard,
+                        "shots": [{**storyboard["shots"][0], "workflow_template": workflow_template, "anime_image": str(Path(tmp) / "frame.png")}],
+                    },
+                ):
                     self.request_json(server, "/api/projects/demo/episodes/episode_001/images", {})
 
                 seen_output_dirs: list[Path] = []

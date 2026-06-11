@@ -6,7 +6,7 @@ from unittest import mock
 
 from anime_workflow.jobs.runner import JobRunner
 from anime_workflow.jobs.store import JobStore
-from anime_workflow.story.storyboard import generate_storyboard, save_storyboard
+from anime_workflow.story.storyboard import generate_storyboard, load_storyboard, save_storyboard
 
 
 class JobQueueStoreTest(unittest.TestCase):
@@ -351,7 +351,7 @@ class JobRunnerTest(unittest.TestCase):
             )
             video_path = root / "exports/demo-episode_001.mp4"
 
-            def fake_images(storyboard, provider, source_dir, output_dir, metadata_dir):
+            def fake_images(storyboard, provider, source_dir, output_dir, metadata_dir, workflow_template=""):
                 updated = dict(storyboard)
                 updated["shots"] = [dict(shot) for shot in storyboard["shots"]]
                 updated["shots"][0]["anime_image"] = str(root / "frame.png")
@@ -501,8 +501,14 @@ class JobRunnerTest(unittest.TestCase):
                 config_loader=lambda: {"openai_api_key": "sk-test"},
             )
 
-            def fake_images(storyboard, provider, source_dir, output_dir, metadata_dir):
-                return storyboard
+            seen_workflow_templates = []
+
+            def fake_images(storyboard, provider, source_dir, output_dir, metadata_dir, workflow_template=""):
+                seen_workflow_templates.append(workflow_template)
+                updated = dict(storyboard)
+                updated["shots"] = [dict(shot) for shot in storyboard["shots"]]
+                updated["shots"][0]["workflow_template"] = workflow_template
+                return updated
 
             with mock.patch.object(runner, "_provider", return_value=mock.Mock(name="fake_provider")) as provider_mock, mock.patch(
                 "anime_workflow.jobs.runner.generate_episode_images", fake_images
@@ -516,6 +522,9 @@ class JobRunnerTest(unittest.TestCase):
                 workflow_template="comfyui_external_anime",
                 confirm_openai=True,
             )
+            self.assertEqual(seen_workflow_templates, ["comfyui_external_anime"])
+            saved_storyboard = load_storyboard(storyboard_dir / "demo" / "episode_001" / "storyboard.json")
+            self.assertEqual(saved_storyboard["shots"][0]["workflow_template"], "comfyui_external_anime")
 
     def test_runner_builds_comfyui_provider_from_remote_config(self):
         with tempfile.TemporaryDirectory() as tmp:

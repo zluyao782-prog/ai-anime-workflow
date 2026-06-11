@@ -67,6 +67,41 @@ class EpisodeProductionTest(unittest.TestCase):
             self.assertTrue(Path(with_images["shots"][0]["anime_image"]).exists())
             self.assertTrue(video_path.exists())
 
+    def test_generate_episode_images_uses_explicit_workflow_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storyboard = generate_storyboard(
+                {
+                    "project_id": "demo_project",
+                    "episode_id": "episode_001",
+                    "genre": "都市",
+                    "premise": "主角准备发布第一集",
+                    "protagonist": "短剧导演",
+                    "style_preset": "clean_anime_drama",
+                    "platform": "douyin",
+                    "duration_seconds": 6,
+                    "shot_count": 1,
+                }
+            )
+
+            def fake_source_frame(path: Path, index: int) -> None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(f"source-{index}".encode("utf-8"))
+
+            with mock.patch("anime_workflow.story.episode_runner.create_source_frame", fake_source_frame):
+                updated = generate_episode_images(
+                    storyboard=storyboard,
+                    provider=MockAnimeProvider(),
+                    source_dir=root / "source_frames",
+                    output_dir=root / "anime_frames",
+                    metadata_dir=root / "metadata",
+                    workflow_template="comfyui_external_anime",
+                )
+
+            self.assertEqual(updated["shots"][0]["workflow_template"], "comfyui_external_anime")
+            metadata = json.loads(Path(updated["shots"][0]["metadata_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(metadata["workflow_template"], "comfyui_external_anime")
+
     def test_generate_shot_image_updates_only_requested_shot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

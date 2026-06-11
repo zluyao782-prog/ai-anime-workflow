@@ -360,10 +360,10 @@ export const api = {
     request<EpisodeResponse>(`/api/episode?project_id=${encodeURIComponent(projectId)}&episode_id=${encodeURIComponent(episodeId)}`),
   createStoryboard: (payload: EpisodeStoryboardRequest) =>
     request<EpisodeResponse>("/api/episode/storyboard", { method: "POST", body: JSON.stringify(payload) }),
-  generateEpisodeImages: (projectId: string, episodeId: string, provider: JobProvider, confirmOpenai = false) =>
+  generateEpisodeImages: (projectId: string, episodeId: string, provider: JobProvider, confirmOpenai = false, workflowTemplate = "") =>
     request<EpisodeResponse>("/api/episode/images", {
       method: "POST",
-      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, provider, confirm_openai: confirmOpenai }),
+      body: JSON.stringify({ project_id: projectId, episode_id: episodeId, provider, workflow_template: workflowTemplate, confirm_openai: confirmOpenai }),
     }),
   exportEpisodeVideo: (projectId: string, episodeId: string) =>
     request<EpisodeResponse>("/api/episode/video", {
@@ -438,10 +438,10 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/storyboard`,
       { method: "POST", body: "{}" },
     ),
-  generateProjectEpisodeImages: (projectId: string, episodeId: string, provider: JobProvider, confirmOpenai = false) =>
+  generateProjectEpisodeImages: (projectId: string, episodeId: string, provider: JobProvider, confirmOpenai = false, workflowTemplate = "") =>
     request<ProjectEpisodeProductionResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/images`,
-      { method: "POST", body: JSON.stringify({ provider, confirm_openai: confirmOpenai }) },
+      { method: "POST", body: JSON.stringify({ provider, workflow_template: workflowTemplate, confirm_openai: confirmOpenai }) },
     ),
   exportProjectEpisodeVideo: (projectId: string, episodeId: string) =>
     request<ProjectEpisodeProductionResponse>(

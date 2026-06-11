@@ -18,6 +18,7 @@ from anime_workflow.imports.adaptation import build_episode_drafts, build_import
 from anime_workflow.imports.document_reader import extract_document_text
 from anime_workflow.launcher.config import LauncherConfigStore, effective_comfyui_base_url
 from anime_workflow.launcher.services import ComfyUIService, PROJECT_ROOT, environment_status, tail_file
+from anime_workflow.jobs.models import DEFAULT_WORKFLOW_TEMPLATES
 from anime_workflow.jobs.runner import JobRunner
 from anime_workflow.jobs.store import JobStore
 from anime_workflow.projects.models import clamp_int, slug as project_slug
@@ -41,6 +42,16 @@ IMPORTS_DIR = PROJECT_ROOT / "data/imports"
 SOURCE_FRAME_DIR = PROJECT_ROOT / "data/assets/source_frames"
 ANIME_FRAME_DIR = PROJECT_ROOT / "data/assets/anime_frames"
 API_METADATA_DIR = PROJECT_ROOT / "data/assets/api_metadata"
+
+
+def workflow_template_for_provider(template_id: Any, provider_name: str) -> dict[str, Any]:
+    provider = str(provider_name or "mock").lower()
+    if provider not in DEFAULT_WORKFLOW_TEMPLATES:
+        provider = "mock"
+    template = workflow_template_by_id(str(template_id or DEFAULT_WORKFLOW_TEMPLATES[provider]))
+    if template["provider"] != provider:
+        raise ValueError("workflow_template provider does not match provider")
+    return template
 
 
 class LauncherRequestHandler(BaseHTTPRequestHandler):
@@ -256,6 +267,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             body = self._read_json()
             path = storyboard_path(STORYBOARD_DIR, body.get("project_id", ""), body.get("episode_id", ""))
             storyboard = load_storyboard(path)
+            template = workflow_template_for_provider(body.get("workflow_template"), str(body.get("provider") or "mock"))
             provider = self._image_provider_from_body(body)
 
             updated = generate_episode_images(
@@ -264,6 +276,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 source_dir=PROJECT_ROOT / "data/assets/source_frames",
                 output_dir=PROJECT_ROOT / "data/assets/anime_frames",
                 metadata_dir=PROJECT_ROOT / "data/assets/api_metadata",
+                workflow_template=template["template_id"],
             )
             saved = save_storyboard(updated, STORYBOARD_DIR)
             self._json({"ok": True, "storyboard": updated, "storyboard_path": str(saved), "provider": provider.name})
@@ -558,7 +571,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             episode_id = str(body.get("episode_id") or "").strip()
             shot_id = str(body.get("shot_id") or "").strip()
             path = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
-            template = workflow_template_by_id(str(body.get("workflow_template") or "mock_image"))
+            template = workflow_template_for_provider(body.get("workflow_template"), str(body.get("provider") or "mock"))
             provider = self._image_provider_from_body(body)
             storyboard = generate_shot_image(
                 storyboard=load_storyboard(path),
@@ -674,6 +687,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
     def _handle_project_episode_images(self, project_id: str, episode_id: str, body: dict[str, Any]) -> None:
         storyboard_file = storyboard_path(STORYBOARD_DIR, project_id, episode_id)
         storyboard = load_storyboard(storyboard_file)
+        template = workflow_template_for_provider(body.get("workflow_template"), str(body.get("provider") or "mock"))
         provider = self._image_provider_from_body(body)
 
         updated = generate_episode_images(
@@ -683,6 +697,7 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
             output_dir=ANIME_FRAME_DIR,
             metadata_dir=API_METADATA_DIR,
             references=self.project_store.list_references(project_id),
+            workflow_template=template["template_id"],
         )
         saved = save_storyboard(updated, STORYBOARD_DIR)
         episode = self.project_store.update_episode(
@@ -695,8 +710,8 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
     def _image_provider_from_body(self, body: dict[str, Any]):
         config = self.config_store.load()
         provider_name = str(body.get("provider") or "mock").lower()
+        template = workflow_template_for_provider(body.get("workflow_template"), provider_name)
         if provider_name == "comfyui":
-            template = workflow_template_by_id(str(body.get("workflow_template") or "comfyui_external_anime"))
             return self._comfyui_image_provider(config, template, confirm_openai=body.get("confirm_openai") is True)
         if provider_name == "openai":
             if body.get("confirm_openai") is not True:

@@ -144,6 +144,7 @@ class JobRunner:
                 source_dir=self.source_dir,
                 output_dir=self.image_dir,
                 metadata_dir=self.metadata_dir,
+                workflow_template=str(job.get("workflow_template") or ""),
             )
             saved = save_storyboard(updated, self.storyboard_dir)
             self.project_store.update_episode(project_id, episode_id, {"status": "imaged", "storyboard_path": str(saved), "error": ""})

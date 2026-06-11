@@ -125,6 +125,12 @@ const defaultDocumentDraft = {
   storyboard_provider: "local" as "local" | "openai",
 };
 
+const defaultWorkflowTemplateByProvider: Record<JobProvider, string> = {
+  mock: "mock_image",
+  openai: "openai_image",
+  comfyui: "comfyui_external_anime",
+};
+
 export function App() {
   const [activeTab, setActiveTab] = useState<TabValue>("overview");
   const [status, setStatus] = useState<LauncherStatus | null>(null);
@@ -310,6 +316,35 @@ export function App() {
     }
   };
 
+  const workflowTemplateForImageProvider = (provider: JobProvider): WorkflowTemplate | null => {
+    const selected = workflowTemplates.find((template) => template.template_id === jobWorkflowTemplate && template.provider === provider);
+    return selected ?? workflowTemplates.find((template) => template.provider === provider) ?? null;
+  };
+
+  const confirmImageRouteRealApiUse = (
+    provider: JobProvider,
+    estimatedText: string,
+    cancelNotice: string,
+  ): { confirmed: boolean; confirmOpenai: boolean; workflowTemplate: string } => {
+    const template = workflowTemplateForImageProvider(provider);
+    const workflowTemplate = template?.template_id ?? defaultWorkflowTemplateByProvider[provider];
+    if (provider === "mock") return { confirmed: true, confirmOpenai: false, workflowTemplate };
+
+    const confirmOpenai = template ? template.requires_openai_confirmation || template.consumes_api : provider === "openai" || provider === "comfyui";
+    if (!confirmOpenai) return { confirmed: true, confirmOpenai: false, workflowTemplate };
+
+    const templateName = template?.name ?? `未知 workflow template "${workflowTemplate}"`;
+    const routeSummary = template?.route_summary ?? `${provider} route 未能在 workflow templates 中确认`;
+    const confirmed = window.confirm(
+      `Workflow template "${templateName}" uses route "${routeSummary}". ${estimatedText} 可能消耗真实图片 API 配额。是否继续？`,
+    );
+    if (!confirmed) {
+      setNotice(cancelNotice);
+      return { confirmed: false, confirmOpenai, workflowTemplate };
+    }
+    return { confirmed: true, confirmOpenai, workflowTemplate };
+  };
+
   const startComfy = () =>
     runBusy("start-comfy", async () => {
       await api.startComfy();
@@ -386,19 +421,19 @@ export function App() {
 
   const generateImages = () =>
     runBusy("episode-images", async () => {
-      if (episodeProvider === "openai") {
-        const estimatedImages = episode?.shots.length ?? episodeForm.shot_count;
-        const confirmed = window.confirm(`将使用 gpt-image-2 API 生成 ${estimatedImages} 张图片，可能消耗真实额度，是否继续？`);
-        if (!confirmed) {
-          setNotice("已取消真实 API 图片生成。");
-          return;
-        }
-      }
+      const estimatedImages = episode?.shots.length ?? episodeForm.shot_count;
+      const { confirmed, confirmOpenai, workflowTemplate } = confirmImageRouteRealApiUse(
+        episodeProvider,
+        `将生成 ${estimatedImages} 张图片`,
+        "已取消真实 API 图片生成。",
+      );
+      if (!confirmed) return;
       const result = await api.generateEpisodeImages(
         episodeForm.project_id,
         episodeForm.episode_id,
         episodeProvider,
-        episodeProvider === "openai",
+        confirmOpenai,
+        workflowTemplate,
       );
       setEpisode(result.storyboard);
       setEpisodeLog(`图片生成完成，provider=${result.provider || episodeProvider}，分镜已更新：${result.storyboard_path}`);
@@ -625,18 +660,18 @@ export function App() {
 
   const generateProjectImages = (projectEpisode: ProjectEpisode) =>
     runBusy(`project-images-${projectEpisode.episode_id}`, async () => {
-      if (episodeProvider === "openai") {
-        const confirmed = window.confirm(`将使用 gpt-image-2 API 为 ${projectEpisode.title} 生成 ${projectEpisode.shot_count} 张图片，可能消耗真实额度，是否继续？`);
-        if (!confirmed) {
-          setNotice("已取消真实 API 图片生成。");
-          return;
-        }
-      }
+      const { confirmed, confirmOpenai, workflowTemplate } = confirmImageRouteRealApiUse(
+        episodeProvider,
+        `将为 ${projectEpisode.title} 生成 ${projectEpisode.shot_count} 张图片`,
+        "已取消真实 API 图片生成。",
+      );
+      if (!confirmed) return;
       const result = await api.generateProjectEpisodeImages(
         projectEpisode.project_id,
         projectEpisode.episode_id,
         episodeProvider,
-        episodeProvider === "openai",
+        confirmOpenai,
+        workflowTemplate,
       );
       if (result.storyboard) setEpisode(result.storyboard);
       setEpisodeLog(`项目图片生成完成，provider=${result.provider || episodeProvider}。`);
